@@ -1,0 +1,6 @@
+ansible-connection-test
+├── playbook.yml
+├── inventory
+├── group_vars
+│   └── all.yml
+└── README.md

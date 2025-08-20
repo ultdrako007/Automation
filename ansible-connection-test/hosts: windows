@@ -1,0 +1,5 @@
+- hosts: windows
+  gather_facts: no
+  tasks:
+    - name: Test connectivity to Windows machines
+      win_ping:

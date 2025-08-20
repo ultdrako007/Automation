@@ -1,0 +1,19 @@
+# Ansible Connection Test
+
+## Uso
+
+### Probar conexión a Linux
+```bash
+ansible-playbook -i inventory playbook.yml
+```
+
+### Probar conexión a Windows
+```bash
+ansible-playbook -i inventory playbook-windows.yml
+```
+
+## Notas
+
+- Edita `inventory` para agregar tus hosts.
+- Configura credenciales en `group_vars/all.yml` o usa archivos separados por grupo.
+- Para Windows, asegúrate de tener
