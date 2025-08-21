@@ -5,14 +5,84 @@
   become_user: root
   
   tasks:
-    - name: Verificar acceso sudo
+    - name: Verificar usuario actual
       command: whoami
       register: user_check
       
     - name: Mostrar usuario actual
       debug:
         msg: "Ejecutándose como: {{ user_check.stdout }}"
+
+    # Solucionar el problema de GRUB primero
+    - name: Hacer backup del archivo GRUB problemático
+      copy:
+        src: /etc/grub.d/40_custom
+        dest: /etc/grub.d/40_custom.backup
+        remote_src: yes
+      ignore_errors: yes
+      
+    - name: Verificar contenido de 40_custom
+      shell: cat /etc/grub.d/40_custom
+      register: grub_content
+      ignore_errors: yes
+      
+    - name: Mostrar contenido problemático de GRUB
+      debug:
+        msg: "{{ grub_content.stdout_lines }}"
+      when: grub_content.stdout is defined
+      
+    - name: Crear archivo GRUB 40_custom limpio
+      copy:
+        content: |
+          #!/bin/sh
+          exec tail -n +3 $0
+          # This file provides an easy way to add custom menu entries.  Simply type the
+          # menu entries you want to add after this comment.  Be careful not to change
+          # the 'exec tail' line above.
+        dest: /etc/grub.d/40_custom
+        mode: '0755'
+        backup: yes
         
+    # Configurar dpkg para continuar
+    - name: Configurar paquetes interrumpidos
+      shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        dpkg --configure -a
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: dpkg_configure
+      ignore_errors: yes
+      
+    - name: Mostrar resultado de configuración dpkg
+      debug:
+        msg: |
+          Configuración dpkg: {{ 'ÉXITO' if dpkg_configure.rc == 0 else 'ERROR' }}
+          Detalles: {{ dpkg_configure.stderr if dpkg_configure.rc != 0 else 'Completado correctamente' }}
+      
+    # Si dpkg sigue fallando, forzar la reparación del kernel
+    - name: Reparar instalación del kernel (si es necesario)
+      shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get install --fix-broken -y
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: fix_broken
+      ignore_errors: yes
+      when: dpkg_configure.rc != 0
+      
+    # Actualizar GRUB manualmente
+    - name: Actualizar configuración de GRUB
+      shell: update-grub
+      register: grub_update
+      ignore_errors: yes
+      
+    - name: Mostrar resultado de actualización GRUB
+      debug:
+        msg: |
+          Actualización GRUB: {{ 'ÉXITO' if grub_update.rc == 0 else 'ERROR' }}
+          {{ grub_update.stderr if grub_update.rc != 0 else 'GRUB actualizado correctamente' }}
+    
+    # Ahora intentar la actualización completa
     - name: Actualizar lista de paquetes
       shell: |
         export DEBIAN_FRONTEND=noninteractive
@@ -21,25 +91,36 @@
         DEBIAN_FRONTEND: noninteractive
       register: apt_update
       
-    - name: Actualizar paquetes del sistema
+    - name: Actualizar paquetes del sistema (con corrección)
       shell: |
         export DEBIAN_FRONTEND=noninteractive
         apt-get upgrade -y
       environment:
         DEBIAN_FRONTEND: noninteractive
       register: apt_upgrade
+      retries: 2
+      delay: 10
       
-    - name: Limpiar paquetes huérfanos
+    - name: Limpiar paquetes huérfanos y cache
       shell: |
         export DEBIAN_FRONTEND=noninteractive
-        apt-get autoremove -y && apt-get autoclean
+        apt-get autoremove -y
+        apt-get autoclean
       environment:
         DEBIAN_FRONTEND: noninteractive
       register: apt_clean
       
-    - name: Mostrar resumen de actualización
+    - name: Mostrar resumen final
       debug:
         msg: |
-          ✓ Update completado: {{ apt_update.rc == 0 }}
-          ✓ Upgrade completado: {{ apt_upgrade.rc == 0 }}  
-          ✓ Limpieza completada: {{ apt_clean.rc == 0 }}
+          ═══════════════════════════════════════
+          📋 RESUMEN DE ACTUALIZACIÓN
+          ═══════════════════════════════════════
+          ✓ GRUB reparado: {{ 'SÍ' if grub_update.rc == 0 else 'ERROR' }}
+          ✓ Update completado: {{ 'SÍ' if apt_update.rc == 0 else 'ERROR' }}
+          ✓ Upgrade completado: {{ 'SÍ' if apt_upgrade.rc == 0 else 'ERROR' }}  
+          ✓ Limpieza completada: {{ 'SÍ' if apt_clean.rc == 0 else 'ERROR' }}
+          ═══════════════════════════════════════
+          Servidor: {{ inventory_hostname }}
+          Usuario: {{ user_check.stdout }}
+          ═══════════════════════════════════════
