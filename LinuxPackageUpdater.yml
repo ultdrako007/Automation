@@ -1,23 +1,45 @@
 ---
 - hosts: all
-  become: true
+  become: yes
   become_method: sudo
-  gather_facts: yes
+  become_user: root
   
   tasks:
-    - name: APT Package Updater
-      apt:
-        upgrade: yes
-        update_cache: yes
-        cache_valid_time: 3600  # Cache válido por 1 hora
-        autoremove: yes         # Remueve paquetes no necesarios
-        autoclean: yes          # Limpia cache de paquetes
-      register: apt_result
+    - name: Verificar acceso sudo
+      command: whoami
+      register: user_check
       
-    - name: Mostrar resultado de la actualización
+    - name: Mostrar usuario actual
+      debug:
+        msg: "Ejecutándose como: {{ user_check.stdout }}"
+        
+    - name: Actualizar lista de paquetes
+      shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: apt_update
+      
+    - name: Actualizar paquetes del sistema
+      shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get upgrade -y
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: apt_upgrade
+      
+    - name: Limpiar paquetes huérfanos
+      shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get autoremove -y && apt-get autoclean
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+      register: apt_clean
+      
+    - name: Mostrar resumen de actualización
       debug:
         msg: |
-          Actualización completada:
-          - Paquetes actualizados: {{ apt_result.changed }}
-          - Cache actualizado: {{ apt_result.cache_updated | default('N/A') }}
-      when: apt_result is defined
+          ✓ Update completado: {{ apt_update.rc == 0 }}
+          ✓ Upgrade completado: {{ apt_upgrade.rc == 0 }}  
+          ✓ Limpieza completada: {{ apt_clean.rc == 0 }}
