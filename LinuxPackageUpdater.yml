@@ -1,0 +1,23 @@
+---
+- hosts: all
+  become: true
+  become_method: sudo
+  gather_facts: yes
+  
+  tasks:
+    - name: APT Package Updater
+      apt:
+        upgrade: yes
+        update_cache: yes
+        cache_valid_time: 3600  # Cache válido por 1 hora
+        autoremove: yes         # Remueve paquetes no necesarios
+        autoclean: yes          # Limpia cache de paquetes
+      register: apt_result
+      
+    - name: Mostrar resultado de la actualización
+      debug:
+        msg: |
+          Actualización completada:
+          - Paquetes actualizados: {{ apt_result.changed }}
+          - Cache actualizado: {{ apt_result.cache_updated | default('N/A') }}
+      when: apt_result is defined
