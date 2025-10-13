@@ -1,33 +1,86 @@
 ---
 - hosts: all
   become: true
+  serial: 3
   tasks:
     - name: Verificar que el sistema es Debian/Ubuntu
       fail:
         msg: "Este playbook solo funciona en sistemas basados en Debian"
       when: ansible_os_family != "Debian"
 
+    - name: Esperar a que se libere el lock de dpkg/apt
+      shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+              fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
+              fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
+          echo "Esperando a que se libere el lock de APT..."
+          sleep 3
+        done
+      changed_when: false
+      failed_when: false
+
+    - name: Eliminar locks de APT si existen
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/dpkg/lock-frontend
+        - /var/lib/apt/lists/lock
+        - /var/cache/apt/archives/lock
+      failed_when: false
+
+    - name: Reconfigurar dpkg si es necesario
+      command: dpkg --configure -a
+      register: dpkg_configure
+      changed_when: dpkg_configure.rc == 0
+      failed_when: false
+
     - name: Actualizar caché de APT
       apt:
         update_cache: yes
-        cache_valid_time: 3600
+        cache_valid_time: 0
+        force_apt_get: yes
       register: apt_cache_update
-      retries: 3
-      delay: 5
+      retries: 5
+      delay: 10
       until: apt_cache_update is success
+      async: 300
+      poll: 5
 
     - name: Actualizar todos los paquetes a la última versión
       apt:
         upgrade: dist
         update_cache: no
-        autoremove: yes
-        autoclean: yes
+        force_apt_get: yes
+        dpkg_options: 'force-confdef,force-confold'
       register: apt_upgrade_result
+      async: 1800
+      poll: 10
+      retries: 2
+      delay: 30
+      until: apt_upgrade_result is success
 
     - name: Mostrar resumen de actualizaciones
       debug:
-        msg: "Se actualizaron {{ apt_upgrade_result.changed }} paquetes"
-      when: apt_upgrade_result.changed
+        msg: 
+          - "Host: {{ inventory_hostname }}"
+          - "Paquetes actualizados: {{ apt_upgrade_result.changed }}"
+          - "Estado: {{ 'Actualizado' if apt_upgrade_result.changed else 'Sin cambios' }}"
+      when: apt_upgrade_result is defined
+
+    - name: Limpiar paquetes huérfanos
+      apt:
+        autoremove: yes
+        purge: yes
+        force_apt_get: yes
+      register: autoremove_result
+      failed_when: false
+
+    - name: Limpiar caché de paquetes descargados
+      apt:
+        autoclean: yes
+        force_apt_get: yes
+      failed_when: false
 
     - name: Verificar si se requiere reinicio
       stat:
@@ -36,14 +89,15 @@
 
     - name: Notificar si se requiere reinicio
       debug:
-        msg: "⚠️  ADVERTENCIA: El sistema requiere reinicio para completar las actualizaciones"
+        msg: "⚠️  ADVERTENCIA: {{ inventory_hostname }} requiere reinicio para completar las actualizaciones"
       when: reboot_required.stat.exists
 
-    - name: Limpiar paquetes huérfanos
-      apt:
-        autoremove: yes
-        purge: yes
-
-    - name: Limpiar caché de paquetes descargados
-      apt:
-        autoclean: yes
+    - name: Generar reporte final
+      debug:
+        msg:
+          - "=== REPORTE DE ACTUALIZACIÓN ==="
+          - "Host: {{ inventory_hostname }}"
+          - "IP: {{ ansible_default_ipv4.address }}"
+          - "Sistema: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Python: {{ ansible_python_version }}"
+          - "Requiere reinicio: {{ 'SÍ' if reboot_required.stat.exists else 'NO' }}"
