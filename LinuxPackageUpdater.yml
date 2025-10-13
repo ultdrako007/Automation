@@ -1,10 +1,49 @@
 ---
 - hosts: all
-
   become: true
-
   tasks:
-    - name: APT Package Updater
+    - name: Verificar que el sistema es Debian/Ubuntu
+      fail:
+        msg: "Este playbook solo funciona en sistemas basados en Debian"
+      when: ansible_os_family != "Debian"
+
+    - name: Actualizar caché de APT
       apt:
-        upgrade: yes
         update_cache: yes
+        cache_valid_time: 3600
+      register: apt_cache_update
+      retries: 3
+      delay: 5
+      until: apt_cache_update is success
+
+    - name: Actualizar todos los paquetes a la última versión
+      apt:
+        upgrade: dist
+        update_cache: no
+        autoremove: yes
+        autoclean: yes
+      register: apt_upgrade_result
+
+    - name: Mostrar resumen de actualizaciones
+      debug:
+        msg: "Se actualizaron {{ apt_upgrade_result.changed }} paquetes"
+      when: apt_upgrade_result.changed
+
+    - name: Verificar si se requiere reinicio
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Notificar si se requiere reinicio
+      debug:
+        msg: "⚠️  ADVERTENCIA: El sistema requiere reinicio para completar las actualizaciones"
+      when: reboot_required.stat.exists
+
+    - name: Limpiar paquetes huérfanos
+      apt:
+        autoremove: yes
+        purge: yes
+
+    - name: Limpiar caché de paquetes descargados
+      apt:
+        autoclean: yes
