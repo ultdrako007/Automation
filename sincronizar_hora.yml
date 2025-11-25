@@ -1,6 +1,6 @@
 ---
 - name: Sincronizar Hora, Zona Horaria e Instalar Cliente NTP
-  hosts: servidores_linux # O 'all', si has cambiado el host pattern
+  hosts: all # O 'all', si has cambiado el host pattern
   become: true            # Ejecuta todas las tareas con privilegios de root (sudo)
   become_method: sudo
   serial: 3               # Mantiene la consistencia del batch processing
