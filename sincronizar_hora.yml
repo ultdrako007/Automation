@@ -1,6 +1,6 @@
 ---
 - name: Sincronizar Hora y Establecer Zona Horaria
-  hosts: servidores_linux  # Ajusta este grupo según tu inventario (ej. 'all', 'debian_servers')
+  hosts: all  # Ajusta este grupo según tu inventario (ej. 'all', 'debian_servers')
   become: true             # Necesario para realizar cambios a nivel de sistema
   become_method: sudo
   serial: 3                # Mantiene la consistencia con tu otro playbook
