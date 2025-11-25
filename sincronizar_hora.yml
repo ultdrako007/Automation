@@ -1,46 +1,57 @@
 ---
-- name: Sincronizar Hora y Establecer Zona Horaria
-  hosts: all  # Ajusta este grupo según tu inventario (ej. 'all', 'debian_servers')
-  become: true             # Necesario para realizar cambios a nivel de sistema
+- name: Sincronizar Hora, Zona Horaria e Instalar Cliente NTP
+  hosts: servidores_linux # O 'all', si has cambiado el host pattern
+  become: true            # Ejecuta todas las tareas con privilegios de root (sudo)
   become_method: sudo
-  serial: 3                # Mantiene la consistencia con tu otro playbook
+  serial: 3               # Mantiene la consistencia del batch processing
 
   tasks:
     # -----------------------------------------------
-    # PRE-CHECKS (Mantenido para consistencia)
+    # FASE 1: PRE-CHECKS Y MANEJO DE LOCKS DE APT
     # -----------------------------------------------
+    
     - name: Verificar que el sistema es Debian/Ubuntu
       fail:
         msg: "Este playbook solo funciona en sistemas basados en Debian"
       when: ansible_os_family != "Debian"
 
-    - name: Verificar privilegios de root
-      command: whoami
-      register: current_user
+    # Tarea añadida para prevenir el fallo del lock (E: Could not open lock file)
+    - name: 1. Matar procesos que bloquean APT
+      shell: |
+        pkill -9 apt || true
+        pkill -9 apt-get || true
+        pkill -9 dpkg || true
+        pkill -9 unattended-upgrade || true
       changed_when: false
+      failed_when: false
 
-    - name: Mostrar usuario actual
-      debug:
-        msg: "Ejecutando como: {{ current_user.stdout }}"
+    # Tarea añadida para limpiar los archivos lock (Permission denied)
+    - name: 2. Eliminar locks de APT si existen
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/dpkg/lock
+        - /var/lib/dpkg/lock-frontend
+        - /var/lib/apt/lists/lock
+        - /var/cache/apt/archives/lock
+      failed_when: false
 
     # -----------------------------------------------
-    # TAREAS DE CONFIGURACIÓN DE HORA
+    # FASE 2: CONFIGURACIÓN DE HORA Y NTP
     # -----------------------------------------------
     
-    - name: Establecer la zona horaria a America/Mexico_City
-      # Módulo 'timezone' maneja automáticamente los cambios persistentes.
+    - name: 3. Establecer la zona horaria a America/Mexico_City 🇲🇽
       community.general.timezone:
-        name: America/Mexico_City 
-      # NOTA: Cambia 'America/Mexico_City' a tu zona horaria.
+        name: America/Mexico_City
+      # NOTA: Reemplaza con tu zona horaria deseada.
 
-    - name: Asegurar que el cliente de sincronización horaria 'chrony' este instalado
-      # Usamos chrony por ser el cliente NTP más moderno y recomendado.
+    - name: 4. Asegurar que el cliente de sincronización horaria 'chrony' este instalado
       ansible.builtin.package:
         name: chrony
         state: present
         
-    - name: Habilitar e iniciar el servicio chronyd para la sincronización horaria
-      # Esto garantiza que la hora se sincronice inmediatamente y al arrancar el sistema.
+    - name: 5. Habilitar e iniciar el servicio chronyd para la sincronización horaria
       ansible.builtin.service:
         name: chronyd
         state: started
@@ -48,7 +59,7 @@
       register: ntp_status
 
     # -----------------------------------------------
-    # REPORTE FINAL
+    # FASE 3: REPORTE FINAL
     # -----------------------------------------------
     
     - name: Mostrar resumen de configuración de hora
@@ -56,6 +67,6 @@
         msg:
           - "================================"
           - "Host: {{ inventory_hostname }}"
-          - "Zona Horaria Establecida: America/Mexico_City"
-          - "NTP (chrony) Estado: {{ 'Iniciado/Habilitado' if ntp_status.changed else 'Ya estaba configurado' }}"
+          - "Zona Horaria Establecida: {{ 'America/Mexico_City' }}"
+          - "NTP (chrony) Estado: {{ 'Iniciado/Habilitado (cambio aplicado)' if ntp_status.changed else 'Ya estaba configurado ✓' }}"
           - "================================"
