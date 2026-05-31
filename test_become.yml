@@ -1,14 +1,29 @@
 ---
-- name: Test become
+- name: Debug become
   hosts: all
-  become: true
-  become_method: sudo
+  gather_facts: false
 
   tasks:
-    - name: Verificar usuario efectivo
-      command: whoami
-      register: result
+    - name: Usuario sin become
+      command: id
+      become: false
+      register: no_become
 
-    - name: Mostrar usuario
+    - name: Usuario con become
+      command: id
+      become: true
+      register: with_become
+      failed_when: false
+
+    - name: sudo -n directo
+      command: sudo -n whoami
+      become: false
+      register: sudo_test
+      failed_when: false
+
+    - name: Resultados
       debug:
-        msg: "Host: {{ inventory_hostname }} - Usuario: {{ result.stdout }}"
+        msg:
+          - "Sin become : {{ no_become.stdout }}"
+          - "Con become : {{ with_become.stdout | default('FALLÓ') }}"
+          - "sudo -n    : {{ sudo_test.stdout | default('') }} {{ sudo_test.stderr | default('') }}"
