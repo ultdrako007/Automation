@@ -1,0 +1,14 @@
+---
+- name: Test become
+  hosts: all
+  become: true
+  become_method: sudo
+
+  tasks:
+    - name: Verificar usuario efectivo
+      command: whoami
+      register: result
+
+    - name: Mostrar usuario
+      debug:
+        msg: "Host: {{ inventory_hostname }} - Usuario: {{ result.stdout }}"
