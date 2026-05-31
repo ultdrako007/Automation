@@ -1,21 +1,18 @@
 ---
 - name: Sincronizar Hora, Zona Horaria e Instalar Cliente NTP
-  hosts: all # O 'all', si has cambiado el host pattern
-  become: true            # Ejecuta todas las tareas con privilegios de root (sudo)
+  hosts: all
+  become: true
   become_method: sudo
-  serial: 3               # Mantiene la consistencia del batch processing
+  serial: 3
 
   tasks:
-    # -----------------------------------------------
-    # FASE 1: PRE-CHECKS Y MANEJO DE LOCKS DE APT
-    # -----------------------------------------------
-    
-    - name: Verificar que el sistema es Debian/Ubuntu
+
+    # FASE 1: PRE-CHECKS
+    - name: Verificar sistema Debian/Ubuntu
       fail:
         msg: "Este playbook solo funciona en sistemas basados en Debian"
       when: ansible_os_family != "Debian"
 
-    # Tarea añadida para prevenir el fallo del lock (E: Could not open lock file)
     - name: 1. Matar procesos que bloquean APT
       shell: |
         pkill -9 apt || true
@@ -25,7 +22,6 @@
       changed_when: false
       failed_when: false
 
-    # Tarea añadida para limpiar los archivos lock (Permission denied)
     - name: 2. Eliminar locks de APT si existen
       ansible.builtin.file:
         path: "{{ item }}"
@@ -37,36 +33,29 @@
         - /var/cache/apt/archives/lock
       failed_when: false
 
-    # -----------------------------------------------
-    # FASE 2: CONFIGURACIÓN DE HORA Y NTP
-    # -----------------------------------------------
-    
-    - name: 3. Establecer la zona horaria a America/Mexico_City 🇲🇽
-      community.general.timezone:
-        name: America/Mexico_City
-      # NOTA: Reemplaza con tu zona horaria deseada.
+    # FASE 2: ZONA HORARIA Y NTP
+    - name: 3. Establecer zona horaria America/Mexico_City
+      ansible.builtin.command: timedatectl set-timezone America/Mexico_City
+      changed_when: false
 
-    - name: 4. Asegurar que el cliente de sincronización horaria 'chrony' este instalado
+    - name: 4. Instalar chrony
       ansible.builtin.package:
         name: chrony
         state: present
-        
-    - name: 5. Habilitar e iniciar el servicio chronyd para la sincronización horaria
+
+    - name: 5. Habilitar e iniciar chrony
       ansible.builtin.service:
-        name: chronyd
+        name: chrony          # <-- corregido de chronyd
         state: started
         enabled: yes
       register: ntp_status
 
-    # -----------------------------------------------
-    # FASE 3: REPORTE FINAL
-    # -----------------------------------------------
-    
-    - name: Mostrar resumen de configuración de hora
+    # FASE 3: REPORTE
+    - name: Reporte final
       debug:
         msg:
           - "================================"
           - "Host: {{ inventory_hostname }}"
-          - "Zona Horaria Establecida: {{ 'America/Mexico_City' }}"
-          - "NTP (chrony) Estado: {{ 'Iniciado/Habilitado (cambio aplicado)' if ntp_status.changed else 'Ya estaba configurado ✓' }}"
+          - "Zona Horaria: America/Mexico_City"
+          - "chrony: {{ 'Iniciado (cambio aplicado)' if ntp_status.changed else 'Ya estaba configurado ✓' }}"
           - "================================"
