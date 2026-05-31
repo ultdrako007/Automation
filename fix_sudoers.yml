@@ -3,8 +3,6 @@
   hosts: all
   become: true
   become_method: sudo
-  vars:
-    ansible_become_pass: "{{ lookup('env', 'BECOME_PASS') }}"
 
   tasks:
     - name: Verificar sistema Debian/Ubuntu
@@ -12,19 +10,19 @@
         msg: "Solo sistemas Debian"
       when: ansible_os_family != "Debian"
 
-    - name: Agregar ultdrako a sudoers con NOPASSWD
-      ansible.builtin.shell: |
-        echo "ultdrako ALL=(ALL) NOPASSWD:ALL" > /tmp/ultdrako_sudoers
-        chmod 440 /tmp/ultdrako_sudoers
-        visudo -cf /tmp/ultdrako_sudoers && mv /tmp/ultdrako_sudoers /etc/sudoers.d/ultdrako
-      args:
-        executable: /bin/bash
+    - name: Configurar sudoers NOPASSWD para ultdrako
+      ansible.builtin.copy:
+        content: "ultdrako ALL=(ALL) NOPASSWD:ALL\n"
+        dest: /etc/sudoers.d/ultdrako
+        mode: '0440'
+        owner: root
+        group: root
 
-    - name: Verificar que sudo funciona
-      command: whoami
-      register: sudo_check
+    - name: Verificar usuario efectivo post-become
+      ansible.builtin.command: whoami
+      register: result
       changed_when: false
 
     - name: Resultado
       debug:
-        msg: "{{ inventory_hostname }} - usuario efectivo: {{ sudo_check.stdout }}"
+        msg: "{{ inventory_hostname }}: usuario = {{ result.stdout }}"
