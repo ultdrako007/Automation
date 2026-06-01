@@ -1,0 +1,46 @@
+---
+- name: Sincronizar Hora y Zona Horaria Windows Server 2025
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Verificar que el sistema es Windows
+      fail:
+        msg: "Este playbook solo funciona en sistemas Windows"
+      when: ansible_os_family != "Windows"
+
+    - name: Establecer zona horaria America/Mexico_City
+      community.windows.win_timezone:
+        timezone: "Central Standard Time"
+
+    - name: Configurar servidor NTP
+      ansible.windows.win_command: >
+        w32tm /config /manualpeerlist:"time.windows.com,0x9 time.nist.gov,0x9"
+        /syncfromflags:manual /reliable:YES /update
+      changed_when: true
+
+    - name: Reiniciar servicio W32Time
+      ansible.windows.win_service:
+        name: W32Time
+        state: restarted
+
+    - name: Forzar sincronización inmediata
+      ansible.windows.win_command: w32tm /resync /force
+      register: resync_result
+      changed_when: false
+      failed_when: false
+
+    - name: Verificar sincronización
+      ansible.windows.win_command: w32tm /query /status
+      register: time_status
+      changed_when: false
+
+    - name: Reporte final
+      debug:
+        msg:
+          - "================================"
+          - "Host            : {{ inventory_hostname }}"
+          - "Zona Horaria    : Central Standard Time (America/Mexico_City)"
+          - "Sincronización  : {{ 'EXITOSA ✓' if resync_result.rc == 0 else 'REVISAR ⚠️' }}"
+          - "Estado W32Time  : {{ time_status.stdout_lines | select('search', 'Source') | list | first | default('N/A') }}"
+          - "================================"
