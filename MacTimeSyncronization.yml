@@ -1,0 +1,51 @@
+---
+- name: Sincronizar Hora y Zona Horaria macOS
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Verificar que el sistema es macOS
+      fail:
+        msg: "Este playbook solo funciona en macOS"
+      when: ansible_os_family != "Darwin"
+
+    - name: Establecer zona horaria America/Mexico_City
+      command: systemsetup -settimezone America/Mexico_City
+      register: tz_result
+      changed_when: true
+
+    - name: Habilitar sincronización de hora automática
+      command: systemsetup -setusingnetworktime on
+      changed_when: true
+
+    - name: Configurar servidor NTP
+      command: systemsetup -setnetworktimeserver time.apple.com
+      changed_when: true
+
+    - name: Forzar sincronización inmediata
+      command: sntp -sS time.apple.com
+      register: sync_result
+      changed_when: false
+      failed_when: false
+
+    - name: Verificar zona horaria
+      command: systemsetup -gettimezone
+      register: tz_check
+      changed_when: false
+
+    - name: Verificar servidor NTP
+      command: systemsetup -getnetworktimeserver
+      register: ntp_check
+      changed_when: false
+
+    - name: Reporte final
+      debug:
+        msg:
+          - "================================"
+          - "Host          : {{ inventory_hostname }}"
+          - "OS            : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Zona Horaria  : {{ tz_check.stdout }}"
+          - "Servidor NTP  : {{ ntp_check.stdout }}"
+          - "Sincronización: {{ 'EXITOSA ✓' if sync_result.rc == 0 else 'REVISAR ⚠️' }}"
+          - "================================"
