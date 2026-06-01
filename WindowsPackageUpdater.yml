@@ -1,0 +1,56 @@
+---
+- name: Actualizar Paquetes Windows Server 2025
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Verificar que el sistema es Windows
+      fail:
+        msg: "Este playbook solo funciona en sistemas Windows"
+      when: ansible_os_family != "Windows"
+
+    - name: Buscar actualizaciones disponibles
+      ansible.windows.win_updates:
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+          - UpdateRollups
+          - Updates
+        state: searched
+      register: available_updates
+
+    - name: Mostrar actualizaciones disponibles
+      debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Actualizaciones disponibles: {{ available_updates.found_update_count }}"
+      when: available_updates.found_update_count > 0
+
+    - name: Instalar actualizaciones
+      ansible.windows.win_updates:
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+          - UpdateRollups
+          - Updates
+        state: installed
+        reboot: false
+      register: update_result
+      when: available_updates.found_update_count > 0
+
+    - name: Reporte final
+      debug:
+        msg:
+          - "================================"
+          - "Host                  : {{ inventory_hostname }}"
+          - "OS                    : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Disponibles           : {{ available_updates.found_update_count }}"
+          - "Instaladas            : {{ update_result.installed_update_count | default(0) }}"
+          - "Estado                : {{ 'ACTUALIZADO ✓' if update_result.changed | default(false) else 'SIN CAMBIOS' }}"
+          - "Reinicio necesario    : {{ 'SÍ ⚠️' if update_result.reboot_required | default(false) else 'NO ✓' }}"
+          - "================================"
+
+    - name: Notificar si se requiere reinicio
+      debug:
+        msg: "⚠️ {{ inventory_hostname }} REQUIERE REINICIO para aplicar actualizaciones"
+      when: update_result.reboot_required | default(false)
