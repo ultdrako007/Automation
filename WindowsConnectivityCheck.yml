@@ -1,0 +1,41 @@
+---
+- name: Validar Conectividad Windows Server 2025
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Verificar que el sistema es Windows
+      fail:
+        msg: "Este playbook solo funciona en sistemas Windows"
+      when: ansible_os_family != "Windows"
+
+    - name: Verificar conectividad WinRM
+      ansible.windows.win_ping:
+
+    - name: Obtener información del sistema
+      ansible.windows.win_command: systeminfo
+      register: sysinfo
+      changed_when: false
+
+    - name: Verificar servicios críticos
+      ansible.windows.win_service_info:
+        name: "{{ item }}"
+      register: svc_info
+      loop:
+        - WinRM
+        - W32Time
+        - wuauserv
+      failed_when: false
+
+    - name: Reporte de conectividad
+      debug:
+        msg:
+          - "================================"
+          - "Host        : {{ inventory_hostname }}"
+          - "OS          : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Arquitectura: {{ ansible_architecture }}"
+          - "Hostname    : {{ ansible_hostname }}"
+          - "IP          : {{ ansible_ip_addresses | first | default('N/A') }}"
+          - "Uptime      : {{ ansible_uptime_seconds // 3600 }}h {{ (ansible_uptime_seconds % 3600) // 60 }}m"
+          - "WinRM       : Conectado ✓"
+          - "================================"
