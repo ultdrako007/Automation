@@ -1,0 +1,48 @@
+---
+- name: Actualizar macOS Software Updates
+  hosts: all
+  gather_facts: true
+  become: true
+
+  tasks:
+    - name: Verificar que el sistema es macOS
+      fail:
+        msg: "Este playbook solo funciona en macOS"
+      when: ansible_os_family != "Darwin"
+
+    - name: Buscar actualizaciones disponibles
+      command: softwareupdate --list
+      register: available_updates
+      changed_when: false
+      failed_when: false
+
+    - name: Mostrar actualizaciones disponibles
+      debug:
+        msg: "{{ available_updates.stdout_lines }}"
+
+    - name: Instalar todas las actualizaciones disponibles
+      command: softwareupdate --install --all
+      register: update_result
+      changed_when: "'No updates are available' not in update_result.stdout"
+      failed_when: false
+
+    - name: Verificar si se requiere reinicio
+      command: softwareupdate --list
+      register: post_update
+      changed_when: false
+      failed_when: false
+
+    - name: Reporte final
+      debug:
+        msg:
+          - "================================"
+          - "Host              : {{ inventory_hostname }}"
+          - "OS                : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Estado            : {{ 'ACTUALIZADO ✓' if update_result.changed else 'SIN CAMBIOS' }}"
+          - "Reinicio necesario: {{ 'SÍ ⚠️' if '[restart]' in post_update.stdout else 'NO ✓' }}"
+          - "================================"
+
+    - name: Notificar si se requiere reinicio
+      debug:
+        msg: "⚠️ {{ inventory_hostname }} REQUIERE REINICIO para aplicar actualizaciones"
+      when: "'[restart]' in post_update.stdout"
