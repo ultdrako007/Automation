@@ -1,14 +1,14 @@
 - name: Desplegar Agente Checkmk 2.5 via Descarga Directa y Auto-Alta
-  hosts: all
+  hosts: Linux
   become: yes
   vars:
     ansible_python_interpreter: auto_silent
     
-    # URL Base Segura para la API y descargas (Pasa por el Reverse Proxy)
+    # URL para la API y descargas (Pasa por tu Reverse Proxy)
     cmk_url_base: "https://checkmate.drakoscave.duckdns.org/cmk"
     cmk_download_url: "{{ cmk_url_base }}/check_mk/agents/check-mk-agent_2.5.0p4-1_all.deb"
     
-    # Conexión directa LAN para el registro del agente TLS
+    # Conexión directa por LAN para el registro TLS del agente
     cmk_server_internal: "192.168.13.244:8000"
     cmk_site: "cmk"
     cmk_automation_secret: "6c3KmS(wIn#U&%Oc" 
@@ -18,7 +18,7 @@
       ansible.builtin.package_facts:
         manager: auto
 
-    - name: 2. Crear el host en Checkmk via REST API (ID de carpeta correcto)
+    - name: 2. Crear el host en Checkmk via REST API (En la carpeta Drakos Lx)
       ansible.builtin.uri:
         url: "{{ cmk_url_base }}/check_mk/api/1.0/domain-types/host_config/collections/all"
         method: POST
@@ -29,27 +29,41 @@
         body_format: json
         body:
           host_name: "{{ ansible_hostname }}"
-          folder: "main"  # <-- Cambiado "/" por "main" (ID correcto de la API)
+          folder: "/drakos_lx"
           attributes:
             ipaddress: "{{ ansible_default_ipv4.address }}"
         status_code: [200, 201, 400]
         validate_certs: yes
       register: cmk_host_api
 
-    - name: 3. Activar cambios pendientes en Checkmk
+    - name: 3a. Obtener el ETag de los cambios pendientes (Requerido por seguridad)
       ansible.builtin.uri:
-        url: "{{ cmk_url_base }}/check_mk/api/1.0/domain-types/activation_run/actions/activate/collection"
+        url: "{{ cmk_url_base }}/check_mk/api/1.0/domain-types/activation_run/collections/pending_changes"
+        method: GET
+        headers:
+          Authorization: "Bearer automation {{ cmk_automation_secret }}"
+          Accept: "application/json"
+        status_code: [200]
+        validate_certs: yes
+      register: cmk_pending_changes
+      run_once: true
+
+    - name: 3b. Activar cambios pendientes en Checkmk (Endpoint e ETag correctos)
+      ansible.builtin.uri:
+        url: "{{ cmk_url_base }}/check_mk/api/1.0/domain-types/activation_run/actions/activate-changes/invoke"
         method: POST
         headers:
           Authorization: "Bearer automation {{ cmk_automation_secret }}"
           Content-Type: "application/json"
           Accept: "application/json"
+          If-Match: "{{ cmk_pending_changes.etag }}"
         body_format: json
         body:
+          redirect: false
           sites:
             - "{{ cmk_site }}"
-          force_foreign_changes: false
-        status_code: [200, 201]
+          force_foreign_changes: true  # Fuerza la activación aunque existan cambios de otros lados
+        status_code: [200, 201, 204]
         validate_certs: yes
       run_once: true
 
