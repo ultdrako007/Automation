@@ -3,7 +3,7 @@
   become: yes
   vars:
     cmk_download_url: "https://checkmate.drakoscave.duckdns.org/cmk/check_mk/agents/check-mk-agent_2.5.0p4-1_all.deb"
-    cmk_server: "192.168.13.244:80"  # <-- Forzamos el puerto 80 local para evitar el timeout de 60s
+    cmk_server: "192.168.13.244:8000"  # <-- Apuntamos directo al puerto del Agent Receiver TLS
     cmk_site: "cmk"
     cmk_automation_secret: "6c3KmS(wIn#U&%Oc" 
 
@@ -47,5 +47,4 @@
         --user automation
         --password "{{ cmk_automation_secret }}"
         --trust-cert
-      # ^-- El --trust-cert permite que el registro ocurra de forma desatendida en Ansible
       when: "'Connections: 0' in agent_status.stdout or 'No connections' in agent_status.stdout"
