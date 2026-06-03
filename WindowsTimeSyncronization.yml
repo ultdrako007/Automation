@@ -11,7 +11,7 @@
 
     - name: Establecer zona horaria America/Mexico_City
       community.windows.win_timezone:
-        timezone: "Central Standard Time"
+        timezone: "Central Standard Time (Mexico)" # <--- CORREGIDO
 
     - name: Configurar servidor NTP
       ansible.windows.win_command: >
@@ -40,7 +40,7 @@
         msg:
           - "================================"
           - "Host            : {{ inventory_hostname }}"
-          - "Zona Horaria    : Central Standard Time (America/Mexico_City)"
+          - "Zona Horaria    : Central Standard Time (Mexico)"
           - "Sincronización  : {{ 'EXITOSA ✓' if resync_result.rc == 0 else 'REVISAR ⚠️' }}"
           - "Estado W32Time  : {{ time_status.stdout_lines | select('search', 'Source') | list | first | default('N/A') }}"
           - "================================"
