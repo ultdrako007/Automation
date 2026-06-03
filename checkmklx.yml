@@ -42,10 +42,9 @@
     - name: 6. Registrar el nodo en Checkmk (Solo si le falta la conexión TLS)
       command: >
         cmk-agent-ctl register
-        --host "{{ inventory_hostname }}"
+        --hostname "{{ ansible_hostname }}"
         --server "{{ cmk_server }}"
         --site "{{ cmk_site }}"
         --user automation
         --password "{{ cmk_automation_secret }}"
-      # Se ejecuta si el agente está instalado pero no tiene conexiones seguras activas
       when: "'Connections: 0' in agent_status.stdout or 'No connections' in agent_status.stdout"
