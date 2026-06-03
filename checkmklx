@@ -1,0 +1,51 @@
+- name: Desplegar Agente Checkmk 2.5 via Descarga Directa
+  hosts: linux_servers
+  become: yes
+  vars:
+    cmk_download_url: "https://checkmate.drakoscave.duckdns.org/cmk/check_mk/agents/check-mk-agent_2.5.0p4-1_all.deb"
+    cmk_server: "checkmate.drakoscave.duckdns.org"
+    cmk_site: "cmk"
+    # Reemplaza con el secret del usuario 'automation' de tu Checkmk
+    cmk_automation_secret: "TU_AUTOMATION_SECRET_AQUI" 
+
+  tasks:
+    - name: 1. Recolectar paquetes instalados en el sistema
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: 2. Descargar el agente desde Checkmate (Solo si NO está instalado)
+      get_url:
+        url: "{{ cmk_download_url }}"
+        dest: /tmp/check-mk-agent.deb
+        validate_certs: yes
+        timeout: 30
+      when: "'check-mk-agent' not in ansible_facts.packages"
+
+    - name: 3. Instalar el paquete .deb del agente (Solo si NO está instalado)
+      apt:
+        deb: /tmp/check-mk-agent.deb
+        state: present
+      when: "'check-mk-agent' not in ansible_facts.packages"
+
+    - name: 4. Remover el archivo temporal .deb (Solo si se descargó)
+      file:
+        path: /tmp/check-mk-agent.deb
+        state: absent
+      when: "'check-mk-agent' not in ansible_facts.packages"
+
+    - name: 5. Verificar si el agente ya está registrado en TLS
+      command: cmk-agent-ctl status
+      register: agent_status
+      changed_when: false
+      failed_when: false
+
+    - name: 6. Registrar el nodo en Checkmk (Solo si le falta la conexión TLS)
+      command: >
+        cmk-agent-ctl register
+        --host "{{ inventory_hostname }}"
+        --server "{{ cmk_server }}"
+        --site "{{ cmk_site }}"
+        --user automation
+        --password "{{ cmk_automation_secret }}"
+      # Se ejecuta si el agente está instalado pero no tiene conexiones seguras activas
+      when: "'Connections: 0' in agent_status.stdout or 'No connections' in agent_status.stdout"
