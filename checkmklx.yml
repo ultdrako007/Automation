@@ -1,5 +1,5 @@
 - name: Desplegar Agente Checkmk 2.5 via Descarga Directa y Auto-Alta
-  hosts: Linux
+  hosts: all
   become: yes
   vars:
     ansible_python_interpreter: auto_silent
