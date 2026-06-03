@@ -2,7 +2,6 @@
   hosts: all
   become: yes
   vars:
-    # Silencia los warnings del intérprete de Python en los logs de Semaphore
     ansible_python_interpreter: auto_silent
     
     # URL Base Segura para la API y descargas (Pasa por el Reverse Proxy)
@@ -19,7 +18,7 @@
       ansible.builtin.package_facts:
         manager: auto
 
-    - name: 2. Crear el host en Checkmk via REST API (Usando URL HTTPS)
+    - name: 2. Crear el host en Checkmk via REST API (ID de carpeta correcto)
       ansible.builtin.uri:
         url: "{{ cmk_url_base }}/check_mk/api/1.0/domain-types/host_config/collections/all"
         method: POST
@@ -30,10 +29,10 @@
         body_format: json
         body:
           host_name: "{{ ansible_hostname }}"
-          folder: "/"
+          folder: "main"  # <-- Cambiado "/" por "main" (ID correcto de la API)
           attributes:
             ipaddress: "{{ ansible_default_ipv4.address }}"
-        status_code: [200, 201, 400] # 400 evita fallos si ya existía el host
+        status_code: [200, 201, 400]
         validate_certs: yes
       register: cmk_host_api
 
@@ -52,7 +51,7 @@
           force_foreign_changes: false
         status_code: [200, 201]
         validate_certs: yes
-      run_once: true # Se ejecuta una sola vez al final del lote de altas
+      run_once: true
 
     - name: 4. Descargar el agente desde Checkmate (Solo si NO está instalado)
       get_url:
