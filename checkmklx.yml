@@ -1,18 +1,51 @@
-- name: Desplegar Agente Checkmk 2.5 via Descarga Directa
+- name: Desplegar Agente Checkmk 2.5 via Descarga Directa y Auto-Alta
   hosts: all
   become: yes
   vars:
     cmk_download_url: "https://checkmate.drakoscave.duckdns.org/cmk/check_mk/agents/check-mk-agent_2.5.0p4-1_all.deb"
-    cmk_server: "192.168.13.244:8000"  # <-- Apuntamos directo al puerto del Agent Receiver TLS
+    cmk_server_ip: "192.168.13.244"  # IP base de Checkmate
     cmk_site: "cmk"
     cmk_automation_secret: "6c3KmS(wIn#U&%Oc" 
 
   tasks:
-    - name: 1. Recolectar paquetes instalados en el sistema
+    - name: 1. Recolectar datos y paquetes del sistema
       ansible.builtin.package_facts:
         manager: auto
 
-    - name: 2. Descargar el agente desde Checkmate (Solo si NO está instalado)
+    - name: 2. Crear el host en Checkmk via REST API (Si no existe)
+      ansible.builtin.uri:
+        url: "http://{{ cmk_server_ip }}/{{ cmk_site }}/check_mk/api/1.0/domain-types/host_config/collections/all"
+        method: POST
+        headers:
+          Authorization: "Bearer automation {{ cmk_automation_secret }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          host_name: "{{ ansible_hostname }}"
+          folder: "/"
+          attributes:
+            ipaddress: "{{ ansible_default_ipv4.address }}"
+        status_code: [200, 201, 400] # El 400 evita que el playbook falle si el host ya estaba creado
+      register: cmk_host_api
+
+    - name: 3. Activar cambios pendientes en Checkmk
+      ansible.builtin.uri:
+        url: "http://{{ cmk_server_ip }}/{{ cmk_site }}/check_mk/api/1.0/domain-types/activation_run/actions/activate/collection"
+        method: POST
+        headers:
+          Authorization: "Bearer automation {{ cmk_automation_secret }}"
+          Content-Type: "application/json"
+          Accept: "application/json"
+        body_format: json
+        body:
+          sites:
+            - "{{ cmk_site }}"
+          force_foreign_changes: false
+        status_code: [200, 201]
+      run_once: true # Crucial: Se ejecuta una sola vez al terminar la ronda de altas para evitar colisiones
+
+    - name: 4. Descargar el agente desde Checkmate (Solo si NO está instalado)
       get_url:
         url: "{{ cmk_download_url }}"
         dest: /tmp/check-mk-agent.deb
@@ -20,29 +53,29 @@
         timeout: 30
       when: "'check-mk-agent' not in ansible_facts.packages"
 
-    - name: 3. Instalar el paquete .deb del agente (Solo si NO está instalado)
+    - name: 5. Instalar el paquete .deb del agente (Solo si NO está instalado)
       apt:
         deb: /tmp/check-mk-agent.deb
         state: present
       when: "'check-mk-agent' not in ansible_facts.packages"
 
-    - name: 4. Remover el archivo temporal .deb (Solo si se descargó)
+    - name: 6. Remover el archivo temporal .deb (Solo si se descargó)
       file:
         path: /tmp/check-mk-agent.deb
         state: absent
       when: "'check-mk-agent' not in ansible_facts.packages"
 
-    - name: 5. Verificar si el agente ya está registrado en TLS
+    - name: 7. Verificar si el agente ya está registrado en TLS
       command: cmk-agent-ctl status
       register: agent_status
       changed_when: false
       failed_when: false
 
-    - name: 6. Registrar el nodo en Checkmk (Solo si le falta la conexión TLS)
+    - name: 8. Registrar el nodo en Checkmk (Ahora que ya existe y está activo)
       command: >
         cmk-agent-ctl register
         --hostname "{{ ansible_hostname }}"
-        --server "{{ cmk_server }}"
+        --server "{{ cmk_server_ip }}:8000"
         --site "{{ cmk_site }}"
         --user automation
         --password "{{ cmk_automation_secret }}"
