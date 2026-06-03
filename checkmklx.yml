@@ -1,5 +1,4 @@
 - name: Desplegar Agente Checkmk 2.5 via Descarga Directa
-  hosts: Linux
   become: yes
   vars:
     cmk_download_url: "https://checkmate.drakoscave.duckdns.org/cmk/check_mk/agents/check-mk-agent_2.5.0p4-1_all.deb"
