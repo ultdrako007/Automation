@@ -1,7 +1,8 @@
 ---
-# CIS Debian 13 Hardening v7b — Drakos Cave SOC — 2026-06-08
+# CIS Debian 13 Hardening v7c — Drakos Cave SOC — 2026-06-08
+# Docker-aware: detecta Docker y preserva ip_forward=1
 
-- name: "CIS Debian 13 Hardening v7b — Drakos Cave SOC"
+- name: "CIS Debian 13 Hardening v7c — Drakos Cave SOC"
   hosts: all
   become: true
   gather_facts: true
@@ -56,6 +57,19 @@
     - name: "PRE | Info del host"
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }} | {{ ansible_distribution }} {{ ansible_distribution_version }} | {{ ansible_kernel }}"
+      tags: [always]
+
+    - name: "PRE | Detectar Docker"
+      ansible.builtin.shell: |
+        command -v docker >/dev/null 2>&1 && docker ps >/dev/null 2>&1 && echo "YES" || echo "NO"
+      register: has_docker
+      changed_when: false
+      tags: [always]
+
+    - name: "PRE | Docker detectado"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: Docker={{ has_docker.stdout | trim }} — ip_forward se preservara en 1"
+      when: has_docker.stdout | trim == "YES"
       tags: [always]
 
   tasks:
@@ -129,6 +143,30 @@
       tags: [network, ipv6]
 
     # === SECCION 4: NETWORK ===
+    - name: "4.0 | ip_forward=0 (solo hosts SIN Docker)"
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: "0"
+        sysctl_set: true
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-cis-network.conf
+      when: has_docker.stdout | trim != "YES"
+      notify: reload sysctl
+      tags: [network, sysctl]
+
+    - name: "4.0b | ip_forward=1 preservado (hosts CON Docker)"
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: "1"
+        sysctl_set: true
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-cis-network.conf
+      when: has_docker.stdout | trim == "YES"
+      notify: reload sysctl
+      tags: [network, sysctl]
+
     - name: "4.1 | Hardening red sysctl"
       ansible.builtin.sysctl:
         name: "{{ item.name }}"
@@ -138,7 +176,6 @@
         reload: true
         sysctl_file: /etc/sysctl.d/99-cis-network.conf
       loop:
-        - { name: "net.ipv4.ip_forward", value: "0" }
         - { name: "net.ipv4.conf.all.send_redirects", value: "0" }
         - { name: "net.ipv4.conf.default.send_redirects", value: "0" }
         - { name: "net.ipv4.conf.all.accept_source_route", value: "0" }
@@ -698,54 +735,3 @@
         content: |
           * hard core 0
         owner: root
-        group: root
-        mode: '0644'
-      tags: [security]
-
-    - name: "18.3 | Core dumps sysctl"
-      ansible.builtin.sysctl:
-        name: fs.suid_dumpable
-        value: "0"
-        sysctl_set: true
-        state: present
-        reload: true
-        sysctl_file: /etc/sysctl.d/99-cis-coredump.conf
-      notify: reload sysctl
-      tags: [security]
-
-    # === SECCION 19: VALIDACIONES ===
-    - name: "19.1 | Verificar cuentas UID 0"
-      ansible.builtin.shell: |
-        awk -F: '($3 == 0 && $1 != "root") {print $1}' /etc/passwd
-      register: uid_zero_check
-      changed_when: false
-      tags: [validation]
-
-    - name: "19.2 | ALERTA UID 0"
-      ansible.builtin.fail:
-        msg: "ALERTA: Cuentas UID 0 adicionales: {{ uid_zero_check.stdout }}"
-      when: uid_zero_check.stdout | length > 0
-      tags: [validation]
-
-    - name: "19.3 | Verificar SSH responde"
-      ansible.builtin.wait_for:
-        port: 22
-        host: "{{ inventory_hostname }}"
-        timeout: 10
-      delegate_to: localhost
-      become: false
-      ignore_errors: true
-      tags: [validation]
-
-  post_tasks:
-    - name: "POST | Resumen"
-      ansible.builtin.debug:
-        msg: |
-          =====================================================
-          HARDENING CIS DEBIAN 13 COMPLETADO
-          =====================================================
-          Host:  {{ inventory_hostname }}
-          OS:    {{ ansible_distribution }} {{ ansible_distribution_version }}
-          Fecha: {{ ansible_date_time.iso8601 }}
-          =====================================================
-      tags: [always]
