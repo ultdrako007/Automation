@@ -1,7 +1,7 @@
 ---
 # =============================================================================
 # CIS Debian Linux 13 Benchmark — Hardening Playbook
-# Generado para Drakos Cave SOC — 2026-06-08
+# Generado para Drakos Cave SOC — 2026-06-08 (v2 - corregido)
 # Ejecutado via Ansible Semaphore
 # =============================================================================
 # FIREWALL EXCLUIDO: Cada servidor tiene puertos distintos segun sus
@@ -17,6 +17,12 @@
 #   services, ssh, crypto, sudo, permissions, cron, passwords, pam,
 #   login_defs, audit, rules, logging, aide, integrity, security,
 #   shell, timeout, validation
+# =============================================================================
+# CHANGELOG v2 (2026-06-08):
+#   - FIX: Agregado systemd daemon_reload despues de instalar auditd
+#          para que systemd reconozca el servicio antes de habilitarlo.
+#   - FIX: Tarea useradd -D -f 45 ahora usa shell con fallback a sed
+#          sobre /etc/default/useradd para compatibilidad con Debian 13.
 # =============================================================================
 
 - name: "CIS Debian 13 Hardening — Drakos Cave SOC (Semaphore)"
@@ -463,10 +469,21 @@
         - { regexp: '^LOGIN_TIMEOUT', line: 'LOGIN_TIMEOUT {{ login_timeout }}' }
       tags: [passwords, login_defs]
 
+    # FIX v2: useradd -D -f 45 fallaba silenciosamente en Debian 13.
+    #         Ahora edita /etc/default/useradd directamente como fallback.
     - name: "12.2 | CIS 33212 | Configurar inactividad de contrasena a 45 dias"
-      ansible.builtin.command:
-        cmd: useradd -D -f 45
-      changed_when: false
+      ansible.builtin.shell:
+        cmd: |
+          if command -v useradd > /dev/null 2>&1; then
+            useradd -D -f 45
+          fi
+          if [ -f /etc/default/useradd ]; then
+            sed -i 's/^INACTIVE=.*/INACTIVE=45/' /etc/default/useradd
+            grep -q '^INACTIVE=' /etc/default/useradd || echo 'INACTIVE=45' >> /etc/default/useradd
+          else
+            echo 'INACTIVE=45' > /etc/default/useradd
+          fi
+      changed_when: true
       tags: [passwords]
 
     - name: "12.3 | CIS 33185 | Instalar libpam-pwquality"
@@ -577,6 +594,16 @@
           - auditd
           - audispd-plugins
         state: present
+      register: auditd_installed
+      tags: [audit]
+
+    # FIX v2: systemd no reconoce el servicio auditd inmediatamente despues
+    #         de instalarlo. daemon_reload fuerza a systemd a releer los
+    #         unit files recien instalados antes de intentar habilitar.
+    - name: "15.1b | Recargar systemd despues de instalar auditd"
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: auditd_installed.changed
       tags: [audit]
 
     - name: "15.2 | Habilitar servicio auditd"
