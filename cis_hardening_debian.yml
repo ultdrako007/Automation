@@ -27,7 +27,7 @@
 # =============================================================================
 
 - name: "CIS Debian 13 Hardening — Drakos Cave SOC (Semaphore)"
-  hosts: linux_servers
+  hosts: all
   become: true
   gather_facts: true
   serial: "30%"
