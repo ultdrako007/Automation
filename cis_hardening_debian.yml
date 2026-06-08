@@ -1,7 +1,7 @@
 ---
 # =============================================================================
 # CIS Debian Linux 13 Benchmark — Hardening Playbook
-# Generado para Drakos Cave SOC — 2026-06-08 (v3 - corregido)
+# Generado para Drakos Cave SOC — 2026-06-08 (v4)
 # Ejecutado via Ansible Semaphore
 # =============================================================================
 # FIREWALL EXCLUIDO: Cada servidor tiene puertos distintos segun sus
@@ -13,13 +13,17 @@
 #   files/issue_banner.txt            <- Banner pre-login (/etc/issue*)
 # =============================================================================
 # CHANGELOG:
+#   v4 (2026-06-08):
+#     - FIX: Deteccion automatica de contenedores (LXC/Docker/nspawn).
+#            auditd requiere acceso al subsistema de auditoria del kernel,
+#            que NO esta disponible en contenedores. Ahora se detecta y
+#            se salta auditd automaticamente en contenedores.
+#     - ADD: Fact is_container en pre_tasks con systemd-detect-virt.
+#     - ADD: Seccion 15 envuelta en block/when: not is_container.
+#     - ADD: Aviso visible en Semaphore cuando auditd se omite.
 #   v3 (2026-06-08):
-#     - FIX: Tarea 12.2 useradd ahora usa lineinfile sobre
-#            /etc/default/useradd en lugar de shell (evita skipping).
-#     - FIX: Tarea 15.2 ahora usa ansible.builtin.systemd con
-#            daemon_reload:true en lugar de ansible.builtin.service
-#            (resuelve "Could not find the requested service auditd").
-#     - ADD: Tareas 15.1c/15.1d de diagnostico para auditd.
+#     - FIX: lineinfile para useradd, systemd module para auditd.
+#     - ADD: Tareas DEBUG para diagnostico (revelaron causa raiz).
 #   v2 (2026-06-08):
 #     - Intento de fix con daemon_reload separado (insuficiente).
 #   v1 (2026-06-08):
@@ -67,6 +71,7 @@
     - name: restart auditd
       ansible.builtin.command:
         cmd: service auditd restart
+      when: not is_container
 
     - name: restart rsyslog
       ansible.builtin.service:
@@ -98,6 +103,55 @@
           Host: {{ inventory_hostname }} |
           OS: {{ ansible_distribution }} {{ ansible_distribution_version }} |
           Kernel: {{ ansible_kernel }}
+      tags: [always]
+
+    # v4: Detectar si el host es un contenedor (LXC/Docker/nspawn/OpenVZ).
+    #     auditd NO funciona en contenedores porque necesita acceso al
+    #     subsistema de auditoria del kernel del host.
+    - name: "PRE | Detectar si el host es un contenedor"
+      ansible.builtin.shell: |
+        # Metodo 1: systemd-detect-virt --container (retorna 0 si es contenedor)
+        if command -v systemd-detect-virt > /dev/null 2>&1; then
+          if systemd-detect-virt --container --quiet 2>/dev/null; then
+            echo "CONTAINER"
+            exit 0
+          fi
+        fi
+        # Metodo 2: verificar /run/systemd/container
+        if [ -f /run/systemd/container ]; then
+          echo "CONTAINER"
+          exit 0
+        fi
+        # Metodo 3: verificar variable container= en PID 1
+        if grep -qa 'container=' /proc/1/environ 2>/dev/null; then
+          echo "CONTAINER"
+          exit 0
+        fi
+        # Metodo 4: verificar /.dockerenv
+        if [ -f /.dockerenv ]; then
+          echo "CONTAINER"
+          exit 0
+        fi
+        # Metodo 5: verificar cgroup para lxc/docker
+        if grep -qE '(lxc|docker|kubepods)' /proc/1/cgroup 2>/dev/null; then
+          echo "CONTAINER"
+          exit 0
+        fi
+        echo "BARE_OR_VM"
+      register: virt_detect
+      changed_when: false
+      tags: [always]
+
+    - name: "PRE | Establecer fact is_container"
+      ansible.builtin.set_fact:
+        is_container: "{{ virt_detect.stdout | trim == 'CONTAINER' }}"
+      tags: [always]
+
+    - name: "PRE | Tipo de host detectado"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ 'CONTENEDOR detectado — auditd sera omitido'
+          if is_container else 'VM/Bare-metal detectado — auditd se aplicara' }}
       tags: [always]
 
   tasks:
@@ -460,9 +514,6 @@
         - { regexp: '^LOGIN_TIMEOUT', line: 'LOGIN_TIMEOUT {{ login_timeout }}' }
       tags: [passwords, login_defs]
 
-    # FIX v3: Usar lineinfile directo sobre /etc/default/useradd.
-    #         El modulo shell se saltaba por problemas de deteccion
-    #         del binario useradd en Debian 13.
     - name: "12.2 | CIS 33212 | Configurar inactividad de contrasena a 45 dias"
       ansible.builtin.lineinfile:
         path: /etc/default/useradd
@@ -571,162 +622,152 @@
 
     # =========================================================================
     # SECCION 15: AUDITORIA — auditd
-    # FIX v3: Usar ansible.builtin.systemd en lugar de service.
-    #         El modulo service usa auto-deteccion que falla en
-    #         instalaciones frescas de auditd en Debian 13.
-    #         El modulo systemd habla directamente con systemd
-    #         e incluye daemon_reload integrado.
+    # NOTA v4: auditd requiere acceso al subsistema de auditoria del kernel.
+    #          En contenedores (LXC/Docker/nspawn) esto NO esta disponible.
+    #          Todo el bloque se omite automaticamente en contenedores.
     # =========================================================================
-    - name: "15.1 | CIS 33245 | Instalar auditd"
-      ansible.builtin.apt:
-        name:
-          - auditd
-          - audispd-plugins
-        state: present
-      tags: [audit]
-
-    - name: "15.1b | Recargar systemd para reconocer auditd"
-      ansible.builtin.systemd:
-        daemon_reload: true
-      tags: [audit]
-
-    - name: "15.1c | DEBUG — Verificar unit files de auditd"
-      ansible.builtin.shell: |
-        echo "=== Unit files ==="
-        systemctl list-unit-files 'audit*' --no-pager 2>&1 || true
-        echo "=== Service status ==="
-        systemctl status auditd.service --no-pager 2>&1 || true
-        echo "=== Package files ==="
-        dpkg -L auditd 2>&1 | grep -E '(service|systemd)' || echo "No systemd files found in auditd package"
-      register: auditd_debug
-      changed_when: false
-      tags: [audit]
-
-    - name: "15.1d | DEBUG — Mostrar estado de auditd"
+    - name: "15.0 | AVISO — auditd omitido en contenedor"
       ansible.builtin.debug:
-        var: auditd_debug.stdout_lines
+        msg: >-
+          AVISO: {{ inventory_hostname }} es un contenedor.
+          auditd requiere acceso al kernel y no funciona en contenedores.
+          La auditoria debe configurarse en el HOST del contenedor.
+          Saltando toda la seccion 15 (auditd).
+      when: is_container
       tags: [audit]
 
-    - name: "15.2 | Habilitar servicio auditd"
-      ansible.builtin.systemd:
-        name: auditd
-        state: started
-        enabled: true
-        daemon_reload: true
+    - name: "SECCION 15 | auditd (solo VM/bare-metal)"
+      when: not is_container
       tags: [audit]
+      block:
+        - name: "15.1 | CIS 33245 | Instalar auditd"
+          ansible.builtin.apt:
+            name:
+              - auditd
+              - audispd-plugins
+            state: present
 
-    - name: "15.3 | CIS 33250-33252 | Configurar auditd.conf"
-      ansible.builtin.lineinfile:
-        path: /etc/audit/auditd.conf
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        backup: true
-      loop:
-        - { regexp: '^max_log_file =', line: 'max_log_file = {{ audit_max_log_file }}' }
-        - { regexp: '^space_left_action', line: 'space_left_action = {{ audit_space_left_action }}' }
-        - { regexp: '^admin_space_left_action', line: 'admin_space_left_action = {{ audit_admin_space_left_action }}' }
-        - { regexp: '^max_log_file_action', line: 'max_log_file_action = {{ audit_max_log_file_action }}' }
-        - { regexp: '^disk_full_action', line: 'disk_full_action = halt' }
-        - { regexp: '^disk_error_action', line: 'disk_error_action = syslog' }
-      notify: restart auditd
-      tags: [audit]
+        - name: "15.1b | Recargar systemd para reconocer auditd"
+          ansible.builtin.systemd:
+            daemon_reload: true
 
-    - name: "15.4 | CIS 33253-33272 | Desplegar reglas de auditoria CIS"
-      ansible.builtin.copy:
-        dest: /etc/audit/rules.d/99-cis-hardening.rules
-        content: |
-          ## CIS Debian 13 — Reglas de auditoria
-          ## Drakos Cave SOC — Generado 2026-06-08
+        - name: "15.2 | Habilitar servicio auditd"
+          ansible.builtin.systemd:
+            name: auditd
+            state: started
+            enabled: true
+            daemon_reload: true
 
-          # -- Cambios en fecha/hora (CIS 33256) --
-          -a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
-          -a always,exit -F arch=b32 -S adjtimex,settimeofday,stime -k time-change
-          -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
-          -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
-          -w /etc/localtime -p wa -k time-change
+        - name: "15.3 | CIS 33250-33252 | Configurar auditd.conf"
+          ansible.builtin.lineinfile:
+            path: /etc/audit/auditd.conf
+            regexp: "{{ item.regexp }}"
+            line: "{{ item.line }}"
+            backup: true
+          loop:
+            - { regexp: '^max_log_file =', line: 'max_log_file = {{ audit_max_log_file }}' }
+            - { regexp: '^space_left_action', line: 'space_left_action = {{ audit_space_left_action }}' }
+            - { regexp: '^admin_space_left_action', line: 'admin_space_left_action = {{ audit_admin_space_left_action }}' }
+            - { regexp: '^max_log_file_action', line: 'max_log_file_action = {{ audit_max_log_file_action }}' }
+            - { regexp: '^disk_full_action', line: 'disk_full_action = halt' }
+            - { regexp: '^disk_error_action', line: 'disk_error_action = syslog' }
+          notify: restart auditd
 
-          # -- Usuarios y grupos (CIS 33260) --
-          -w /etc/group -p wa -k identity
-          -w /etc/passwd -p wa -k identity
-          -w /etc/gshadow -p wa -k identity
-          -w /etc/shadow -p wa -k identity
-          -w /etc/security/opasswd -p wa -k identity
-          -w /etc/nsswitch.conf -p wa -k identity
-          -w /etc/pam.conf -p wa -k identity
-          -w /etc/pam.d -p wa -k identity
+        - name: "15.4 | CIS 33253-33272 | Desplegar reglas de auditoria CIS"
+          ansible.builtin.copy:
+            dest: /etc/audit/rules.d/99-cis-hardening.rules
+            content: |
+              ## CIS Debian 13 — Reglas de auditoria
+              ## Drakos Cave SOC — Generado 2026-06-08
 
-          # -- Cambios de red (CIS 33257) --
-          -a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
-          -a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
-          -w /etc/issue -p wa -k system-locale
-          -w /etc/issue.net -p wa -k system-locale
-          -w /etc/hosts -p wa -k system-locale
-          -w /etc/networks -p wa -k system-locale
-          -w /etc/network/ -p wa -k system-locale
+              # -- Cambios en fecha/hora (CIS 33256) --
+              -a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
+              -a always,exit -F arch=b32 -S adjtimex,settimeofday,stime -k time-change
+              -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
+              -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
+              -w /etc/localtime -p wa -k time-change
 
-          # -- MAC/AppArmor (CIS 33266) --
-          -w /etc/apparmor/ -p wa -k MAC-policy
-          -w /etc/apparmor.d/ -p wa -k MAC-policy
+              # -- Usuarios y grupos (CIS 33260) --
+              -w /etc/group -p wa -k identity
+              -w /etc/passwd -p wa -k identity
+              -w /etc/gshadow -p wa -k identity
+              -w /etc/shadow -p wa -k identity
+              -w /etc/security/opasswd -p wa -k identity
+              -w /etc/nsswitch.conf -p wa -k identity
+              -w /etc/pam.conf -p wa -k identity
+              -w /etc/pam.d -p wa -k identity
 
-          # -- Sudoers (CIS 33253) --
-          -w /etc/sudoers -p wa -k scope
-          -w /etc/sudoers.d/ -p wa -k scope
+              # -- Cambios de red (CIS 33257) --
+              -a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
+              -a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
+              -w /etc/issue -p wa -k system-locale
+              -w /etc/issue.net -p wa -k system-locale
+              -w /etc/hosts -p wa -k system-locale
+              -w /etc/networks -p wa -k system-locale
+              -w /etc/network/ -p wa -k system-locale
 
-          # -- Acciones sudo (CIS 33255) --
-          -w /var/log/sudo.log -p wa -k sudo_log_file
+              # -- MAC/AppArmor (CIS 33266) --
+              -w /etc/apparmor/ -p wa -k MAC-policy
+              -w /etc/apparmor.d/ -p wa -k MAC-policy
 
-          # -- Acciones como otro usuario (CIS 33254) --
-          -a always,exit -F arch=b64 -C euid!=uid -F auid!=unset -S execve -k user_emulation
-          -a always,exit -F arch=b32 -C euid!=uid -F auid!=unset -S execve -k user_emulation
+              # -- Sudoers (CIS 33253) --
+              -w /etc/sudoers -p wa -k scope
+              -w /etc/sudoers.d/ -p wa -k scope
 
-          # -- Sesiones (CIS 33263) --
-          -w /var/run/utmp -p wa -k session
-          -w /var/log/wtmp -p wa -k session
-          -w /var/log/btmp -p wa -k session
+              # -- Acciones sudo (CIS 33255) --
+              -w /var/log/sudo.log -p wa -k sudo_log_file
 
-          # -- Logins (CIS 33264) --
-          -w /var/log/lastlog -p wa -k logins
-          -w /var/run/faillock -p wa -k logins
+              # -- Acciones como otro usuario (CIS 33254) --
+              -a always,exit -F arch=b64 -C euid!=uid -F auid!=unset -S execve -k user_emulation
+              -a always,exit -F arch=b32 -C euid!=uid -F auid!=unset -S execve -k user_emulation
 
-          # -- Cambios de permisos DAC (CIS 33261) --
-          -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
-          -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
-          -a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
-          -a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
-          -a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
-          -a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+              # -- Sesiones (CIS 33263) --
+              -w /var/run/utmp -p wa -k session
+              -w /var/log/wtmp -p wa -k session
+              -w /var/log/btmp -p wa -k session
 
-          # -- Acceso no autorizado (CIS 33259) --
-          -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
-          -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
-          -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
-          -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+              # -- Logins (CIS 33264) --
+              -w /var/log/lastlog -p wa -k logins
+              -w /var/run/faillock -p wa -k logins
 
-          # -- Montajes (CIS 33262) --
-          -a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts
-          -a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=unset -k mounts
+              # -- Cambios de permisos DAC (CIS 33261) --
+              -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+              -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
+              -a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
+              -a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
+              -a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
+              -a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
 
-          # -- Eliminacion de archivos (CIS 33265) --
-          -a always,exit -F arch=b64 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
-          -a always,exit -F arch=b32 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+              # -- Acceso no autorizado (CIS 33259) --
+              -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
+              -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
+              -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
+              -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
 
-          # -- Modulos de kernel (CIS 33271) --
-          -a always,exit -F arch=b64 -S init_module,finit_module,delete_module,create_module,query_module -F auid>=1000 -F auid!=unset -k kernel_modules
-          -a always,exit -F path=/usr/bin/kmod -F perm=x -F auid>=1000 -F auid!=unset -k kernel_modules
+              # -- Montajes (CIS 33262) --
+              -a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts
+              -a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=unset -k mounts
 
-          # -- Comandos de permisos (CIS 33267-33270) --
-          -a always,exit -F path=/usr/bin/chcon -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
-          -a always,exit -F path=/usr/bin/setfacl -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
-          -a always,exit -F path=/usr/bin/chacl -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
-          -a always,exit -F path=/usr/sbin/usermod -F perm=x -F auid>=1000 -F auid!=unset -k usermod
+              # -- Eliminacion de archivos (CIS 33265) --
+              -a always,exit -F arch=b64 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
+              -a always,exit -F arch=b32 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
 
-          # -- INMUTABLE — Ultima linea (CIS 33272) --
-          -e 2
-        owner: root
-        group: root
-        mode: '0640'
-      notify: restart auditd
-      tags: [audit, rules]
+              # -- Modulos de kernel (CIS 33271) --
+              -a always,exit -F arch=b64 -S init_module,finit_module,delete_module,create_module,query_module -F auid>=1000 -F auid!=unset -k kernel_modules
+              -a always,exit -F path=/usr/bin/kmod -F perm=x -F auid>=1000 -F auid!=unset -k kernel_modules
+
+              # -- Comandos de permisos (CIS 33267-33270) --
+              -a always,exit -F path=/usr/bin/chcon -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
+              -a always,exit -F path=/usr/bin/setfacl -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
+              -a always,exit -F path=/usr/bin/chacl -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
+              -a always,exit -F path=/usr/sbin/usermod -F perm=x -F auid>=1000 -F auid!=unset -k usermod
+
+              # -- INMUTABLE — Ultima linea (CIS 33272) --
+              -e 2
+            owner: root
+            group: root
+            mode: '0640'
+          notify: restart auditd
 
     # =========================================================================
     # SECCION 16: RSYSLOG + JOURNAL REMOTE
@@ -862,9 +903,10 @@
           =============================================================
           HARDENING CIS DEBIAN 13 COMPLETADO
           =============================================================
-          Host:  {{ inventory_hostname }}
-          OS:    {{ ansible_distribution }} {{ ansible_distribution_version }}
-          Fecha: {{ ansible_date_time.iso8601 }}
+          Host:       {{ inventory_hostname }}
+          OS:         {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Fecha:      {{ ansible_date_time.iso8601 }}
+          Contenedor: {{ 'SI — auditd OMITIDO' if is_container else 'NO — auditd aplicado' }}
           -------------------------------------------------------------
           Controles aplicados:
             [OK] /dev/shm hardened (nodev,nosuid,noexec)
@@ -880,7 +922,7 @@
             [OK] Permisos: cron, passwd, shadow, gshadow, opasswd, grub
             [OK] Password policies: login.defs + yescrypt + INACTIVE=45
             [OK] PAM: nullok eliminado
-            [OK] auditd: instalado + configurado + 40 reglas CIS
+            [{{ '--' if is_container else 'OK' }}] auditd{{ ' (omitido — contenedor)' if is_container else ': instalado + configurado + 40 reglas CIS' }}
             [OK] rsyslog + journal-remote habilitados
             [OK] AIDE instalado
             [OK] Shell timeout (900s)
