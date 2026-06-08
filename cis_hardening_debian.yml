@@ -1,7 +1,7 @@
 ---
 # =============================================================================
 # CIS Debian Linux 13 Benchmark — Hardening Playbook
-# Generado para Drakos Cave SOC — 2026-06-08 (v2 - corregido)
+# Generado para Drakos Cave SOC — 2026-06-08 (v3 - corregido)
 # Ejecutado via Ansible Semaphore
 # =============================================================================
 # FIREWALL EXCLUIDO: Cada servidor tiene puertos distintos segun sus
@@ -12,21 +12,22 @@
 #   files/motd_banner.txt             <- Banner post-login (/etc/motd)
 #   files/issue_banner.txt            <- Banner pre-login (/etc/issue*)
 # =============================================================================
-# TAGS DISPONIBLES:
-#   filesystem, ipv6, network, sysctl, bluetooth, apparmor, banners,
-#   services, ssh, crypto, sudo, permissions, cron, passwords, pam,
-#   login_defs, audit, rules, logging, aide, integrity, security,
-#   shell, timeout, validation
-# =============================================================================
-# CHANGELOG v2 (2026-06-08):
-#   - FIX: Agregado systemd daemon_reload despues de instalar auditd
-#          para que systemd reconozca el servicio antes de habilitarlo.
-#   - FIX: Tarea useradd -D -f 45 ahora usa shell con fallback a sed
-#          sobre /etc/default/useradd para compatibilidad con Debian 13.
+# CHANGELOG:
+#   v3 (2026-06-08):
+#     - FIX: Tarea 12.2 useradd ahora usa lineinfile sobre
+#            /etc/default/useradd en lugar de shell (evita skipping).
+#     - FIX: Tarea 15.2 ahora usa ansible.builtin.systemd con
+#            daemon_reload:true en lugar de ansible.builtin.service
+#            (resuelve "Could not find the requested service auditd").
+#     - ADD: Tareas 15.1c/15.1d de diagnostico para auditd.
+#   v2 (2026-06-08):
+#     - Intento de fix con daemon_reload separado (insuficiente).
+#   v1 (2026-06-08):
+#     - Version inicial.
 # =============================================================================
 
 - name: "CIS Debian 13 Hardening — Drakos Cave SOC (Semaphore)"
-  hosts: all
+  hosts: linux_servers
   become: true
   gather_facts: true
   serial: "30%"
@@ -102,7 +103,6 @@
   tasks:
     # =========================================================================
     # SECCION 1: FILESYSTEM — Opciones de montaje /dev/shm
-    # CIS IDs: 33015, 33016, 33017
     # =========================================================================
     - name: "1.1 | CIS 33015-33017 | Configurar /dev/shm con nodev,nosuid,noexec"
       ansible.builtin.mount:
@@ -200,7 +200,6 @@
 
     # =========================================================================
     # SECCION 5: BLUETOOTH — Deshabilitar
-    # CIS ID: 33109
     # =========================================================================
     - name: "5.1 | CIS 33109 | Deshabilitar servicio Bluetooth"
       ansible.builtin.service:
@@ -212,7 +211,6 @@
 
     # =========================================================================
     # SECCION 6: AppArmor
-    # CIS IDs: 33039, 33040
     # =========================================================================
     - name: "6.1 | CIS 33039 | Instalar AppArmor"
       ansible.builtin.apt:
@@ -247,9 +245,7 @@
       tags: [apparmor]
 
     # =========================================================================
-    # SECCION 7: BANNERS — /etc/issue, /etc/issue.net, /etc/motd
-    # CIS IDs: 33048, 33049, 33050, 33051, 33052, 33053
-    # Archivos fuente: files/motd_banner.txt, files/issue_banner.txt
+    # SECCION 7: BANNERS
     # =========================================================================
     - name: "7.1 | CIS 33049 | Configurar banner /etc/issue"
       ansible.builtin.copy:
@@ -303,10 +299,9 @@
       tags: [banners, permissions]
 
     # =========================================================================
-    # SECCION 8: SERVICIOS — Eliminar X Window, chrony
-    # CIS IDs: 33083, 33097
+    # SECCION 8: SERVICIOS — X Window, chrony
     # =========================================================================
-    - name: "8.1 | CIS 33083 | Eliminar X Window (GUI no necesaria en servidores)"
+    - name: "8.1 | CIS 33083 | Eliminar X Window"
       ansible.builtin.apt:
         name: xserver-common
         state: absent
@@ -330,7 +325,6 @@
 
     # =========================================================================
     # SECCION 9: SSH HARDENING
-    # CIS IDs: 33157, 33158, 33160, 33161, 33166, 33168, 33171
     # =========================================================================
     - name: "9.1 | Permisos en /etc/ssh/sshd_config"
       ansible.builtin.file:
@@ -397,7 +391,6 @@
 
     # =========================================================================
     # SECCION 10: SUDO HARDENING
-    # CIS IDs: 33178, 33181, 33182
     # =========================================================================
     - name: "10.1 | CIS 33178 | Configurar log de sudo"
       ansible.builtin.lineinfile:
@@ -425,8 +418,7 @@
       tags: [sudo, pam]
 
     # =========================================================================
-    # SECCION 11: PERMISOS DE ARCHIVOS — Cron
-    # CIS IDs: 33099, 33100, 33101, 33102, 33103, 33104
+    # SECCION 11: PERMISOS — Cron
     # =========================================================================
     - name: "11.1 | CIS 33099 | Permisos en /etc/crontab"
       ansible.builtin.file:
@@ -452,7 +444,6 @@
 
     # =========================================================================
     # SECCION 12: POLITICAS DE CONTRASENAS — login.defs
-    # CIS IDs: 33208, 33209, 33210, 33211, 33212
     # =========================================================================
     - name: "12.1 | CIS 33208-33211 | Politicas de contrasenas en login.defs"
       ansible.builtin.lineinfile:
@@ -469,21 +460,16 @@
         - { regexp: '^LOGIN_TIMEOUT', line: 'LOGIN_TIMEOUT {{ login_timeout }}' }
       tags: [passwords, login_defs]
 
-    # FIX v2: useradd -D -f 45 fallaba silenciosamente en Debian 13.
-    #         Ahora edita /etc/default/useradd directamente como fallback.
+    # FIX v3: Usar lineinfile directo sobre /etc/default/useradd.
+    #         El modulo shell se saltaba por problemas de deteccion
+    #         del binario useradd en Debian 13.
     - name: "12.2 | CIS 33212 | Configurar inactividad de contrasena a 45 dias"
-      ansible.builtin.shell:
-        cmd: |
-          if command -v useradd > /dev/null 2>&1; then
-            useradd -D -f 45
-          fi
-          if [ -f /etc/default/useradd ]; then
-            sed -i 's/^INACTIVE=.*/INACTIVE=45/' /etc/default/useradd
-            grep -q '^INACTIVE=' /etc/default/useradd || echo 'INACTIVE=45' >> /etc/default/useradd
-          else
-            echo 'INACTIVE=45' > /etc/default/useradd
-          fi
-      changed_when: true
+      ansible.builtin.lineinfile:
+        path: /etc/default/useradd
+        regexp: '^#?INACTIVE='
+        line: 'INACTIVE=45'
+        create: true
+        backup: true
       tags: [passwords]
 
     - name: "12.3 | CIS 33185 | Instalar libpam-pwquality"
@@ -494,7 +480,6 @@
 
     # =========================================================================
     # SECCION 13: PAM HARDENING
-    # CIS IDs: 33204, 33207
     # =========================================================================
     - name: "13.1 | CIS 33204 | Eliminar nullok de archivos PAM"
       ansible.builtin.replace:
@@ -586,7 +571,11 @@
 
     # =========================================================================
     # SECCION 15: AUDITORIA — auditd
-    # CIS IDs: 33245, 33248, 33250, 33251, 33252, 33253-33272
+    # FIX v3: Usar ansible.builtin.systemd en lugar de service.
+    #         El modulo service usa auto-deteccion que falla en
+    #         instalaciones frescas de auditd en Debian 13.
+    #         El modulo systemd habla directamente con systemd
+    #         e incluye daemon_reload integrado.
     # =========================================================================
     - name: "15.1 | CIS 33245 | Instalar auditd"
       ansible.builtin.apt:
@@ -594,23 +583,36 @@
           - auditd
           - audispd-plugins
         state: present
-      register: auditd_installed
       tags: [audit]
 
-    # FIX v2: systemd no reconoce el servicio auditd inmediatamente despues
-    #         de instalarlo. daemon_reload fuerza a systemd a releer los
-    #         unit files recien instalados antes de intentar habilitar.
-    - name: "15.1b | Recargar systemd despues de instalar auditd"
+    - name: "15.1b | Recargar systemd para reconocer auditd"
       ansible.builtin.systemd:
         daemon_reload: true
-      when: auditd_installed.changed
+      tags: [audit]
+
+    - name: "15.1c | DEBUG — Verificar unit files de auditd"
+      ansible.builtin.shell: |
+        echo "=== Unit files ==="
+        systemctl list-unit-files 'audit*' --no-pager 2>&1 || true
+        echo "=== Service status ==="
+        systemctl status auditd.service --no-pager 2>&1 || true
+        echo "=== Package files ==="
+        dpkg -L auditd 2>&1 | grep -E '(service|systemd)' || echo "No systemd files found in auditd package"
+      register: auditd_debug
+      changed_when: false
+      tags: [audit]
+
+    - name: "15.1d | DEBUG — Mostrar estado de auditd"
+      ansible.builtin.debug:
+        var: auditd_debug.stdout_lines
       tags: [audit]
 
     - name: "15.2 | Habilitar servicio auditd"
-      ansible.builtin.service:
+      ansible.builtin.systemd:
         name: auditd
         state: started
         enabled: true
+        daemon_reload: true
       tags: [audit]
 
     - name: "15.3 | CIS 33250-33252 | Configurar auditd.conf"
@@ -728,7 +730,6 @@
 
     # =========================================================================
     # SECCION 16: RSYSLOG + JOURNAL REMOTE
-    # CIS IDs: 33229, 33231, 33236, 33237
     # =========================================================================
     - name: "16.1 | CIS 33229 | Instalar systemd-journal-remote"
       ansible.builtin.apt:
@@ -761,7 +762,6 @@
 
     # =========================================================================
     # SECCION 17: AIDE — Integridad de archivos
-    # CIS IDs: 33284, 33285
     # =========================================================================
     - name: "17.1 | CIS 33284 | Instalar AIDE"
       ansible.builtin.apt:
@@ -878,7 +878,7 @@
             [OK] SSH hardened (14 params + MACs + Ciphers + KEX)
             [OK] Sudo: log, timeout, restriccion su
             [OK] Permisos: cron, passwd, shadow, gshadow, opasswd, grub
-            [OK] Password policies: login.defs + yescrypt
+            [OK] Password policies: login.defs + yescrypt + INACTIVE=45
             [OK] PAM: nullok eliminado
             [OK] auditd: instalado + configurado + 40 reglas CIS
             [OK] rsyslog + journal-remote habilitados
