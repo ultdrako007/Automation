@@ -1,7 +1,7 @@
 ---
 # =============================================================================
 # CIS Debian Linux 13 Benchmark — Hardening Playbook
-# Generado para Drakos Cave SOC — 2026-06-08 (v5)
+# Generado para Drakos Cave SOC — 2026-06-08 (v6)
 # Ejecutado via Ansible Semaphore
 # =============================================================================
 # FIREWALL EXCLUIDO: Cada servidor tiene puertos distintos segun sus
@@ -11,18 +11,19 @@
 #   cis_hardening_debian.yml          <- Este playbook
 #   files/motd_banner.txt             <- Banner post-login (/etc/motd)
 #   files/issue_banner.txt            <- Banner pre-login (/etc/issue*)
+#   files/auditd.conf                 <- Config completa de auditd (v6)
 # =============================================================================
 # CHANGELOG:
-#   v5 (2026-06-08):
-#     - FIX: Bypass total de modulos Ansible service/systemd para auditd.
-#            Los modulos usan auto-deteccion que falla en Debian 13.
-#            Ahora se usa ansible.builtin.shell con systemctl directo
-#            y fallback a SysV init (service/update-rc.d).
-#     - FIX: Handler "restart auditd" tambien usa shell directo.
-#     - DEL: Removida deteccion de contenedores (hosts NO son contenedores).
-#   v4: Deteccion de contenedores (causa raiz era diferente).
-#   v3: lineinfile para useradd, systemd module (insuficiente).
-#   v2: daemon_reload separado (insuficiente).
+#   v6 (2026-06-08):
+#     - FIX: /etc/audit/auditd.conf no existe tras apt install en algunos
+#            hosts Debian 13. dpkg --configure falla silenciosamente.
+#     - ADD: Crear directorios /etc/audit/ y /etc/audit/rules.d/ previo.
+#     - ADD: Forzar dpkg --configure -a tras instalar auditd.
+#     - ADD: Desplegar auditd.conf COMPLETO via copy (files/auditd.conf)
+#            en lugar de lineinfile sobre archivo inexistente.
+#     - ADD: Compatibilidad Ubuntu 24.04 (audispd-plugins vs audisp-plugins).
+#   v5: Shell bypass para service/systemd module.
+#   v3-v4: Intentos previos de fix.
 #   v1: Version inicial.
 # =============================================================================
 
@@ -64,7 +65,6 @@
         name: sshd
         state: restarted
 
-    # v5: Bypass — shell directo para reiniciar auditd
     - name: restart auditd
       ansible.builtin.shell: |
         systemctl restart auditd.service 2>/dev/null || service auditd restart 2>/dev/null || true
@@ -103,7 +103,7 @@
 
   tasks:
     # =========================================================================
-    # SECCION 1: FILESYSTEM — Opciones de montaje /dev/shm
+    # SECCION 1: FILESYSTEM
     # =========================================================================
     - name: "1.1 | CIS 33015-33017 | Configurar /dev/shm con nodev,nosuid,noexec"
       ansible.builtin.mount:
@@ -168,7 +168,7 @@
       tags: [network, ipv6]
 
     # =========================================================================
-    # SECCION 4: NETWORK HARDENING — Sysctl
+    # SECCION 4: NETWORK HARDENING
     # =========================================================================
     - name: "4.1 | Hardening de red via sysctl"
       ansible.builtin.sysctl:
@@ -200,7 +200,7 @@
       tags: [network, sysctl]
 
     # =========================================================================
-    # SECCION 5: BLUETOOTH — Deshabilitar
+    # SECCION 5: BLUETOOTH
     # =========================================================================
     - name: "5.1 | CIS 33109 | Deshabilitar servicio Bluetooth"
       ansible.builtin.service:
@@ -300,7 +300,7 @@
       tags: [banners, permissions]
 
     # =========================================================================
-    # SECCION 8: SERVICIOS — X Window, chrony
+    # SECCION 8: SERVICIOS
     # =========================================================================
     - name: "8.1 | CIS 33083 | Eliminar X Window"
       ansible.builtin.apt:
@@ -569,27 +569,62 @@
 
     # =========================================================================
     # SECCION 15: AUDITORIA — auditd
-    # v5: Bypass total de modulos Ansible service/systemd.
-    #     Los modulos usan auto-deteccion interna que falla en Debian 13
-    #     cuando auditd se instala por primera vez. Se usan comandos
-    #     directos de systemctl con fallback a SysV init.
+    # v6: dpkg --configure puede fallar silenciosamente en Debian 13,
+    #     dejando auditd instalado pero sin configurar (sin auditd.conf,
+    #     sin unit file de systemd). La solucion:
+    #     1) Crear directorios manualmente
+    #     2) Instalar paquetes (compatible Debian + Ubuntu)
+    #     3) Forzar dpkg --configure
+    #     4) Desplegar auditd.conf completo desde files/
+    #     5) Iniciar servicio via shell directo
     # =========================================================================
+    - name: "15.0 | Crear directorios de auditd"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+      loop:
+        - /etc/audit
+        - /etc/audit/rules.d
+        - /etc/audit/plugins.d
+        - /var/log/audit
+      tags: [audit]
+
     - name: "15.1 | CIS 33245 | Instalar auditd"
       ansible.builtin.apt:
-        name:
-          - auditd
-          - audispd-plugins
+        name: auditd
         state: present
       tags: [audit]
 
-    - name: "15.1b | Recargar systemd para reconocer auditd"
-      ansible.builtin.shell: systemctl daemon-reload
+    - name: "15.1b | Instalar audispd-plugins (compatible Debian/Ubuntu)"
+      ansible.builtin.apt:
+        name: audispd-plugins
+        state: present
+      ignore_errors: true
+      tags: [audit]
+
+    - name: "15.1c | Forzar configuracion de paquetes pendientes"
+      ansible.builtin.shell: |
+        dpkg --configure -a 2>&1 || true
+        systemctl daemon-reload 2>/dev/null || true
       changed_when: false
       tags: [audit]
 
-    - name: "15.2 | Iniciar y habilitar servicio auditd"
+    - name: "15.2 | Desplegar auditd.conf completo"
+      ansible.builtin.copy:
+        src: files/auditd.conf
+        dest: /etc/audit/auditd.conf
+        owner: root
+        group: root
+        mode: '0640'
+        backup: true
+      notify: restart auditd
+      tags: [audit]
+
+    - name: "15.3 | Iniciar y habilitar servicio auditd"
       ansible.builtin.shell: |
-        # Intentar iniciar via systemd
         if systemctl is-active auditd.service > /dev/null 2>&1; then
           echo "AUDITD_YA_ACTIVO"
         elif systemctl start auditd.service 2>/dev/null; then
@@ -597,39 +632,21 @@
         elif service auditd start 2>/dev/null; then
           echo "AUDITD_INICIADO_SYSV"
         else
-          echo "AUDITD_ERROR_INICIO"
-          # Verificar si existe el unit file
+          echo "AUDITD_ERROR"
           echo "--- DEBUG ---"
-          ls -la /lib/systemd/system/auditd* 2>&1 || echo "No unit files in /lib/systemd/system/"
-          ls -la /etc/init.d/auditd 2>&1 || echo "No SysV init script"
-          systemctl list-unit-files 'audit*' --no-pager 2>&1 || true
+          ls -la /lib/systemd/system/auditd* 2>&1 || echo "No systemd units"
+          ls -la /etc/init.d/auditd 2>&1 || echo "No SysV script"
+          dpkg -l auditd 2>&1 | tail -2
           exit 1
         fi
-        # Habilitar al arranque
         systemctl enable auditd.service 2>/dev/null || update-rc.d auditd enable 2>/dev/null || true
       register: auditd_result
       changed_when: "'INICIADO' in auditd_result.stdout"
       tags: [audit]
 
-    - name: "15.2b | Resultado de auditd"
+    - name: "15.3b | Estado de auditd"
       ansible.builtin.debug:
         msg: "{{ inventory_hostname }}: {{ auditd_result.stdout }}"
-      tags: [audit]
-
-    - name: "15.3 | CIS 33250-33252 | Configurar auditd.conf"
-      ansible.builtin.lineinfile:
-        path: /etc/audit/auditd.conf
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        backup: true
-      loop:
-        - { regexp: '^max_log_file =', line: 'max_log_file = {{ audit_max_log_file }}' }
-        - { regexp: '^space_left_action', line: 'space_left_action = {{ audit_space_left_action }}' }
-        - { regexp: '^admin_space_left_action', line: 'admin_space_left_action = {{ audit_admin_space_left_action }}' }
-        - { regexp: '^max_log_file_action', line: 'max_log_file_action = {{ audit_max_log_file_action }}' }
-        - { regexp: '^disk_full_action', line: 'disk_full_action = halt' }
-        - { regexp: '^disk_error_action', line: 'disk_error_action = syslog' }
-      notify: restart auditd
       tags: [audit]
 
     - name: "15.4 | CIS 33253-33272 | Desplegar reglas de auditoria CIS"
@@ -762,7 +779,7 @@
       tags: [logging]
 
     # =========================================================================
-    # SECCION 17: AIDE — Integridad de archivos
+    # SECCION 17: AIDE
     # =========================================================================
     - name: "17.1 | CIS 33284 | Instalar AIDE"
       ansible.builtin.apt:
