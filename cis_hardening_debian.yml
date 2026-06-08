@@ -1,34 +1,9 @@
 ---
 # =============================================================================
-# CIS Debian Linux 13 Benchmark — Hardening Playbook
-# Generado para Drakos Cave SOC — 2026-06-08 (v7)
-# Ejecutado via Ansible Semaphore
-# =============================================================================
-# FIREWALL EXCLUIDO: Cada servidor tiene puertos distintos segun sus
-#     servicios. nftables/iptables deben configurarse individualmente.
-# =============================================================================
-# ESTRUCTURA DE ARCHIVOS:
-#   cis_hardening_debian.yml          <- Este playbook
-#   files/motd_banner.txt             <- Banner post-login (/etc/motd)
-#   files/issue_banner.txt            <- Banner pre-login (/etc/issue*)
-#   files/auditd.conf                 <- Config completa de auditd (v6+)
-# =============================================================================
-# CHANGELOG:
-#   v7 (2026-06-08):
-#     - FIX SISTEMICO: .243 y .253 tienen dpkg --configure roto que afecta
-#       TODOS los paquetes nuevos (no solo auditd). Los servicios se instalan
-#       pero systemd no los reconoce porque los unit files no se registran.
-#     - ADD: Tarea 0.1 global de reparacion dpkg/apt al inicio del play.
-#     - FIX: Todos los servicios (apparmor, chrony, auditd, rsyslog) ahora
-#       se inician y habilitan via shell con fallback SysV.
-#     - FIX: dpkg --configure + daemon-reload ANTES de cada bloque de
-#       habilitacion de servicio.
-#   v6: auditd.conf desplegado completo, crear directorios.
-#   v5: Shell bypass para auditd.
-#   v1-v4: Versiones previas.
+# CIS Debian 13 Hardening v7 — Drakos Cave SOC — 2026-06-08
 # =============================================================================
 
-- name: "CIS Debian 13 Hardening — Drakos Cave SOC (Semaphore)"
+- name: "CIS Debian 13 Hardening v7 — Drakos Cave SOC"
   hosts: all
   become: true
   gather_facts: true
@@ -36,7 +11,6 @@
   max_fail_percentage: 0
 
   vars:
-    # -- SSH --
     ssh_max_auth_tries: 4
     ssh_login_grace_time: 60
     ssh_client_alive_interval: 15
@@ -44,35 +18,25 @@
     ssh_max_sessions: 10
     ssh_max_startups: "10:30:60"
     ssh_log_level: "VERBOSE"
-
-    # -- Contrasenas --
     pass_max_days: 365
     pass_min_days: 1
     pass_warn_age: 7
-    pass_min_len: 14
     login_timeout: 60
     umask_default: "027"
     shell_timeout: 900
 
-    # -- Auditd --
-    audit_max_log_file: 8
-    audit_space_left_action: "email"
-    audit_admin_space_left_action: "halt"
-    audit_max_log_file_action: "keep_logs"
-
   handlers:
     - name: restart sshd
       ansible.builtin.shell: |
-        systemctl restart sshd.service 2>/dev/null || service sshd restart 2>/dev/null || \
-        systemctl restart ssh.service 2>/dev/null || service ssh restart 2>/dev/null || true
+        systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
 
     - name: restart auditd
       ansible.builtin.shell: |
-        systemctl restart auditd.service 2>/dev/null || service auditd restart 2>/dev/null || true
+        systemctl restart auditd 2>/dev/null || service auditd restart 2>/dev/null || true
 
     - name: restart rsyslog
       ansible.builtin.shell: |
-        systemctl restart rsyslog.service 2>/dev/null || service rsyslog restart 2>/dev/null || true
+        systemctl restart rsyslog 2>/dev/null || service rsyslog restart 2>/dev/null || true
 
     - name: reload sysctl
       ansible.builtin.command:
@@ -80,33 +44,25 @@
 
     - name: restart apparmor
       ansible.builtin.shell: |
-        systemctl restart apparmor.service 2>/dev/null || service apparmor restart 2>/dev/null || true
+        systemctl restart apparmor 2>/dev/null || service apparmor restart 2>/dev/null || true
 
     - name: restart chrony
       ansible.builtin.shell: |
-        systemctl restart chrony.service 2>/dev/null || systemctl restart chronyd.service 2>/dev/null || \
-        service chrony restart 2>/dev/null || true
+        systemctl restart chrony 2>/dev/null || service chrony restart 2>/dev/null || true
 
   pre_tasks:
-    - name: "PRE | Verificar conectividad antes de aplicar hardening"
+    - name: "PRE | Ping"
       ansible.builtin.ping:
       tags: [always]
 
-    - name: "PRE | Registrar estado previo del host"
+    - name: "PRE | Info del host"
       ansible.builtin.debug:
-        msg: >-
-          Host: {{ inventory_hostname }} |
-          OS: {{ ansible_distribution }} {{ ansible_distribution_version }} |
-          Kernel: {{ ansible_kernel }}
+        msg: "{{ inventory_hostname }} | {{ ansible_distribution }} {{ ansible_distribution_version }} | {{ ansible_kernel }}"
       tags: [always]
 
   tasks:
-    # =========================================================================
-    # SECCION 0: REPARACION GLOBAL DE PAQUETES
-    # v7: .243 y .253 tienen dpkg --configure roto. Esta tarea repara
-    #     paquetes pendientes ANTES de cualquier instalacion/servicio.
-    # =========================================================================
-    - name: "0.1 | Reparar paquetes pendientes de configuracion"
+    # === SECCION 0: REPARACION GLOBAL dpkg ===
+    - name: "0.1 | Reparar paquetes pendientes"
       ansible.builtin.shell: |
         export DEBIAN_FRONTEND=noninteractive
         dpkg --configure -a 2>&1 || true
@@ -115,21 +71,17 @@
       changed_when: false
       tags: [always]
 
-    # =========================================================================
-    # SECCION 1: FILESYSTEM
-    # =========================================================================
-    - name: "1.1 | CIS 33015-33017 | Configurar /dev/shm con nodev,nosuid,noexec"
+    # === SECCION 1: FILESYSTEM ===
+    - name: "1.1 | CIS 33015 | /dev/shm nodev,nosuid,noexec"
       ansible.builtin.mount:
         path: /dev/shm
         src: tmpfs
         fstype: tmpfs
         opts: defaults,rw,nosuid,nodev,noexec,relatime
         state: mounted
-      tags: [filesystem, dev_shm]
+      tags: [filesystem]
 
-    # =========================================================================
-    # SECCION 2: DESHABILITAR MODULOS INNECESARIOS
-    # =========================================================================
+    # === SECCION 2: MODULOS ===
     - name: "2.1 | Deshabilitar cramfs"
       ansible.builtin.copy:
         dest: /etc/modprobe.d/cramfs.conf
@@ -139,7 +91,7 @@
         owner: root
         group: root
         mode: '0644'
-      tags: [filesystem, modules]
+      tags: [modules]
 
     - name: "2.2 | Deshabilitar usb-storage"
       ansible.builtin.copy:
@@ -150,11 +102,9 @@
         owner: root
         group: root
         mode: '0644'
-      tags: [filesystem, modules]
+      tags: [modules]
 
-    # =========================================================================
-    # SECCION 3: DESHABILITAR IPv6
-    # =========================================================================
+    # === SECCION 3: IPv6 ===
     - name: "3.1 | Deshabilitar IPv6 via sysctl"
       ansible.builtin.sysctl:
         name: "{{ item.name }}"
@@ -170,7 +120,7 @@
       notify: reload sysctl
       tags: [network, ipv6]
 
-    - name: "3.2 | Deshabilitar modulo IPv6 via modprobe"
+    - name: "3.2 | Deshabilitar IPv6 modprobe"
       ansible.builtin.copy:
         dest: /etc/modprobe.d/ipv6.conf
         content: |
@@ -180,10 +130,8 @@
         mode: '0644'
       tags: [network, ipv6]
 
-    # =========================================================================
-    # SECCION 4: NETWORK HARDENING
-    # =========================================================================
-    - name: "4.1 | Hardening de red via sysctl"
+    # === SECCION 4: NETWORK ===
+    - name: "4.1 | Hardening red sysctl"
       ansible.builtin.sysctl:
         name: "{{ item.name }}"
         value: "{{ item.value }}"
@@ -212,30 +160,23 @@
       notify: reload sysctl
       tags: [network, sysctl]
 
-    # =========================================================================
-    # SECCION 5: BLUETOOTH
-    # =========================================================================
-    - name: "5.1 | CIS 33109 | Deshabilitar servicio Bluetooth"
+    # === SECCION 5: BLUETOOTH ===
+    - name: "5.1 | CIS 33109 | Deshabilitar Bluetooth"
       ansible.builtin.shell: |
-        systemctl stop bluetooth.service 2>/dev/null || true
-        systemctl disable bluetooth.service 2>/dev/null || true
+        systemctl stop bluetooth 2>/dev/null || true
+        systemctl disable bluetooth 2>/dev/null || true
       changed_when: false
-      ignore_errors: true
-      tags: [services, bluetooth]
+      tags: [services]
 
-    # =========================================================================
-    # SECCION 6: AppArmor
-    # =========================================================================
+    # === SECCION 6: AppArmor ===
     - name: "6.1 | CIS 33039 | Instalar AppArmor"
       ansible.builtin.apt:
-        name:
-          - apparmor
-          - apparmor-utils
+        name: [apparmor, apparmor-utils]
         state: present
         update_cache: true
       tags: [apparmor]
 
-    - name: "6.1b | Configurar paquetes y recargar systemd"
+    - name: "6.1b | dpkg configure + daemon-reload"
       ansible.builtin.shell: |
         export DEBIAN_FRONTEND=noninteractive
         dpkg --configure -a 2>&1 || true
@@ -243,7 +184,7 @@
       changed_when: false
       tags: [apparmor]
 
-    - name: "6.2 | CIS 33040 | Habilitar AppArmor en GRUB"
+    - name: "6.2 | CIS 33040 | AppArmor en GRUB"
       ansible.builtin.lineinfile:
         path: /etc/default/grub
         regexp: '^GRUB_CMDLINE_LINUX='
@@ -252,23 +193,20 @@
       register: grub_changed
       tags: [apparmor, audit]
 
-    - name: "6.3 | Actualizar GRUB si se modifico"
-      ansible.builtin.command:
-        cmd: update-grub
+    - name: "6.3 | Actualizar GRUB"
+      ansible.builtin.command: update-grub
       when: grub_changed.changed
       tags: [apparmor, audit]
 
-    - name: "6.4 | Habilitar servicio AppArmor"
+    - name: "6.4 | Iniciar AppArmor"
       ansible.builtin.shell: |
-        systemctl start apparmor.service 2>/dev/null || service apparmor start 2>/dev/null || true
-        systemctl enable apparmor.service 2>/dev/null || true
+        systemctl start apparmor 2>/dev/null || service apparmor start 2>/dev/null || true
+        systemctl enable apparmor 2>/dev/null || true
       changed_when: false
       tags: [apparmor]
 
-    # =========================================================================
-    # SECCION 7: BANNERS
-    # =========================================================================
-    - name: "7.1 | CIS 33049 | Configurar banner /etc/issue"
+    # === SECCION 7: BANNERS ===
+    - name: "7.1 | CIS 33049 | /etc/issue"
       ansible.builtin.copy:
         src: files/issue_banner.txt
         dest: /etc/issue
@@ -277,7 +215,7 @@
         mode: '0644'
       tags: [banners]
 
-    - name: "7.2 | CIS 33050 | Configurar banner /etc/issue.net"
+    - name: "7.2 | CIS 33050 | /etc/issue.net"
       ansible.builtin.copy:
         src: files/issue_banner.txt
         dest: /etc/issue.net
@@ -286,7 +224,7 @@
         mode: '0644'
       tags: [banners]
 
-    - name: "7.3 | CIS 33048 | Configurar /etc/motd"
+    - name: "7.3 | CIS 33048 | /etc/motd"
       ansible.builtin.copy:
         src: files/motd_banner.txt
         dest: /etc/motd
@@ -295,40 +233,38 @@
         mode: '0644'
       tags: [banners]
 
-    - name: "7.4 | CIS 33051 | Permisos en /etc/motd"
+    - name: "7.4 | Permisos /etc/motd"
       ansible.builtin.file:
         path: /etc/motd
         owner: root
         group: root
         mode: '0644'
-      tags: [banners, permissions]
+      tags: [banners]
 
-    - name: "7.5 | CIS 33052 | Permisos en /etc/issue"
+    - name: "7.5 | Permisos /etc/issue"
       ansible.builtin.file:
         path: /etc/issue
         owner: root
         group: root
         mode: '0644'
-      tags: [banners, permissions]
+      tags: [banners]
 
-    - name: "7.6 | CIS 33053 | Permisos en /etc/issue.net"
+    - name: "7.6 | Permisos /etc/issue.net"
       ansible.builtin.file:
         path: /etc/issue.net
         owner: root
         group: root
         mode: '0644'
-      tags: [banners, permissions]
+      tags: [banners]
 
-    # =========================================================================
-    # SECCION 8: SERVICIOS
-    # =========================================================================
+    # === SECCION 8: SERVICIOS ===
     - name: "8.1 | CIS 33083 | Eliminar X Window"
       ansible.builtin.apt:
         name: xserver-common
         state: absent
         purge: true
       ignore_errors: true
-      tags: [services, xwindow]
+      tags: [services]
 
     - name: "8.2 | CIS 33097 | Instalar chrony"
       ansible.builtin.apt:
@@ -336,7 +272,7 @@
         state: present
       tags: [services, ntp]
 
-    - name: "8.2b | Configurar paquetes y recargar systemd"
+    - name: "8.2b | dpkg configure + daemon-reload"
       ansible.builtin.shell: |
         export DEBIAN_FRONTEND=noninteractive
         dpkg --configure -a 2>&1 || true
@@ -344,26 +280,23 @@
       changed_when: false
       tags: [services, ntp]
 
-    - name: "8.3 | Habilitar servicio chrony"
+    - name: "8.3 | Iniciar chrony"
       ansible.builtin.shell: |
-        systemctl start chrony.service 2>/dev/null || systemctl start chronyd.service 2>/dev/null || \
-        service chrony start 2>/dev/null || true
-        systemctl enable chrony.service 2>/dev/null || systemctl enable chronyd.service 2>/dev/null || true
+        systemctl start chrony 2>/dev/null || service chrony start 2>/dev/null || true
+        systemctl enable chrony 2>/dev/null || true
       changed_when: false
       tags: [services, ntp]
 
-    # =========================================================================
-    # SECCION 9: SSH HARDENING
-    # =========================================================================
-    - name: "9.1 | Permisos en /etc/ssh/sshd_config"
+    # === SECCION 9: SSH ===
+    - name: "9.1 | Permisos sshd_config"
       ansible.builtin.file:
         path: /etc/ssh/sshd_config
         owner: root
         group: root
         mode: '0600'
-      tags: [ssh, permissions]
+      tags: [ssh]
 
-    - name: "9.2 | SSH Hardening — Configuracion segura"
+    - name: "9.2 | SSH Hardening"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: "{{ item.regexp }}"
@@ -388,7 +321,7 @@
       notify: restart sshd
       tags: [ssh]
 
-    - name: "9.3 | CIS 33168 | Configurar MACs seguros para SSH"
+    - name: "9.3 | MACs seguros"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?MACs'
@@ -398,7 +331,7 @@
       notify: restart sshd
       tags: [ssh, crypto]
 
-    - name: "9.4 | Configurar Ciphers seguros para SSH"
+    - name: "9.4 | Ciphers seguros"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?Ciphers'
@@ -408,7 +341,7 @@
       notify: restart sshd
       tags: [ssh, crypto]
 
-    - name: "9.5 | Configurar KEX seguros para SSH"
+    - name: "9.5 | KEX seguros"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
         regexp: '^#?KexAlgorithms'
@@ -418,10 +351,8 @@
       notify: restart sshd
       tags: [ssh, crypto]
 
-    # =========================================================================
-    # SECCION 10: SUDO HARDENING
-    # =========================================================================
-    - name: "10.1 | CIS 33178 | Configurar log de sudo"
+    # === SECCION 10: SUDO ===
+    - name: "10.1 | CIS 33178 | Log de sudo"
       ansible.builtin.lineinfile:
         path: /etc/sudoers
         regexp: '^Defaults.*logfile'
@@ -430,7 +361,7 @@
         backup: true
       tags: [sudo]
 
-    - name: "10.2 | CIS 33181 | Configurar timeout de sudo a 15 min"
+    - name: "10.2 | CIS 33181 | Timeout sudo 15 min"
       ansible.builtin.lineinfile:
         path: /etc/sudoers
         regexp: '^Defaults.*timestamp_timeout'
@@ -439,25 +370,23 @@
         backup: true
       tags: [sudo]
 
-    - name: "10.3 | CIS 33182 | Restringir acceso a su"
+    - name: "10.3 | CIS 33182 | Restringir su"
       ansible.builtin.lineinfile:
         path: /etc/pam.d/su
         regexp: '^#?auth.*required.*pam_wheel.so'
         line: 'auth required pam_wheel.so use_uid group=sudo'
       tags: [sudo, pam]
 
-    # =========================================================================
-    # SECCION 11: PERMISOS — Cron
-    # =========================================================================
-    - name: "11.1 | CIS 33099 | Permisos en /etc/crontab"
+    # === SECCION 11: CRON ===
+    - name: "11.1 | CIS 33099 | Permisos /etc/crontab"
       ansible.builtin.file:
         path: /etc/crontab
         owner: root
         group: root
         mode: '0600'
-      tags: [permissions, cron]
+      tags: [cron]
 
-    - name: "11.2 | CIS 33100-33104 | Permisos en directorios cron"
+    - name: "11.2 | CIS 33100-33104 | Permisos dirs cron"
       ansible.builtin.file:
         path: "{{ item }}"
         owner: root
@@ -469,12 +398,10 @@
         - /etc/cron.weekly
         - /etc/cron.monthly
         - /etc/cron.d
-      tags: [permissions, cron]
+      tags: [cron]
 
-    # =========================================================================
-    # SECCION 12: POLITICAS DE CONTRASENAS
-    # =========================================================================
-    - name: "12.1 | CIS 33208-33211 | Politicas de contrasenas en login.defs"
+    # === SECCION 12: CONTRASENAS ===
+    - name: "12.1 | CIS 33208-33211 | login.defs"
       ansible.builtin.lineinfile:
         path: /etc/login.defs
         regexp: "{{ item.regexp }}"
@@ -487,9 +414,9 @@
         - { regexp: '^ENCRYPT_METHOD', line: 'ENCRYPT_METHOD yescrypt' }
         - { regexp: '^UMASK', line: 'UMASK {{ umask_default }}' }
         - { regexp: '^LOGIN_TIMEOUT', line: 'LOGIN_TIMEOUT {{ login_timeout }}' }
-      tags: [passwords, login_defs]
+      tags: [passwords]
 
-    - name: "12.2 | CIS 33212 | Configurar inactividad de contrasena a 45 dias"
+    - name: "12.2 | CIS 33212 | INACTIVE=45"
       ansible.builtin.lineinfile:
         path: /etc/default/useradd
         regexp: '^#?INACTIVE='
@@ -502,12 +429,10 @@
       ansible.builtin.apt:
         name: libpam-pwquality
         state: present
-      tags: [passwords, pam]
+      tags: [passwords]
 
-    # =========================================================================
-    # SECCION 13: PAM HARDENING
-    # =========================================================================
-    - name: "13.1 | CIS 33204 | Eliminar nullok de archivos PAM"
+    # === SECCION 13: PAM ===
+    - name: "13.1 | CIS 33204 | Eliminar nullok"
       ansible.builtin.replace:
         path: "{{ item }}"
         regexp: '\s+nullok'
@@ -520,62 +445,36 @@
         - /etc/pam.d/common-session
         - /etc/pam.d/common-session-noninteractive
       ignore_errors: true
-      tags: [pam, passwords]
+      tags: [pam]
 
-    # =========================================================================
-    # SECCION 14: PERMISOS DE ARCHIVOS DE SISTEMA
-    # =========================================================================
-    - name: "14.1 | Permisos en /etc/passwd"
-      ansible.builtin.file:
-        path: /etc/passwd
-        owner: root
-        group: root
-        mode: '0644'
+    # === SECCION 14: PERMISOS ===
+    - name: "14.1 | /etc/passwd"
+      ansible.builtin.file: { path: /etc/passwd, owner: root, group: root, mode: '0644' }
       tags: [permissions]
 
-    - name: "14.2 | Permisos en /etc/group"
-      ansible.builtin.file:
-        path: /etc/group
-        owner: root
-        group: root
-        mode: '0644'
+    - name: "14.2 | /etc/group"
+      ansible.builtin.file: { path: /etc/group, owner: root, group: root, mode: '0644' }
       tags: [permissions]
 
-    - name: "14.3 | Permisos en /etc/shadow"
-      ansible.builtin.file:
-        path: /etc/shadow
-        owner: root
-        group: shadow
-        mode: '0640'
+    - name: "14.3 | /etc/shadow"
+      ansible.builtin.file: { path: /etc/shadow, owner: root, group: shadow, mode: '0640' }
       tags: [permissions]
 
-    - name: "14.4 | Permisos en /etc/gshadow"
-      ansible.builtin.file:
-        path: /etc/gshadow
-        owner: root
-        group: shadow
-        mode: '0640'
+    - name: "14.4 | /etc/gshadow"
+      ansible.builtin.file: { path: /etc/gshadow, owner: root, group: shadow, mode: '0640' }
       tags: [permissions]
 
-    - name: "14.5 | Permisos en /etc/passwd-"
-      ansible.builtin.file:
-        path: /etc/passwd-
-        owner: root
-        group: root
-        mode: '0600'
+    - name: "14.5 | /etc/passwd-"
+      ansible.builtin.file: { path: /etc/passwd-, owner: root, group: root, mode: '0600' }
       ignore_errors: true
       tags: [permissions]
 
-    - name: "14.6 | Permisos en /etc/group-"
-      ansible.builtin.file:
-        path: /etc/group-
-        owner: root
-        group: root
-        mode: '0600'
+    - name: "14.6 | /etc/group-"
+      ansible.builtin.file: { path: /etc/group-, owner: root, group: root, mode: '0600' }
       ignore_errors: true
       tags: [permissions]
 
-    - name: "14.7 | Permisos en /etc/security/opasswd"
+    - name: "14.7 | /etc/security/opasswd"
       ansible.builtin.file:
         path: /etc/security/opasswd
         owner: root
@@ -586,19 +485,13 @@
         access_time: preserve
       tags: [permissions]
 
-    - name: "14.8 | CIS 33044 | Permisos en /boot/grub/grub.cfg"
-      ansible.builtin.file:
-        path: /boot/grub/grub.cfg
-        owner: root
-        group: root
-        mode: '0600'
+    - name: "14.8 | CIS 33044 | /boot/grub/grub.cfg"
+      ansible.builtin.file: { path: /boot/grub/grub.cfg, owner: root, group: root, mode: '0600' }
       ignore_errors: true
-      tags: [permissions, bootloader]
+      tags: [permissions]
 
-    # =========================================================================
-    # SECCION 15: AUDITORIA — auditd
-    # =========================================================================
-    - name: "15.0 | Crear directorios de auditd"
+    # === SECCION 15: AUDITD ===
+    - name: "15.0 | Crear directorios auditd"
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -618,14 +511,14 @@
         state: present
       tags: [audit]
 
-    - name: "15.1b | Instalar audispd-plugins (compatible Debian/Ubuntu)"
+    - name: "15.1b | Instalar audispd-plugins"
       ansible.builtin.apt:
         name: audispd-plugins
         state: present
       ignore_errors: true
       tags: [audit]
 
-    - name: "15.1c | Configurar paquetes y recargar systemd"
+    - name: "15.1c | dpkg configure + daemon-reload"
       ansible.builtin.shell: |
         export DEBIAN_FRONTEND=noninteractive
         dpkg --configure -a 2>&1 || true
@@ -633,7 +526,7 @@
       changed_when: false
       tags: [audit]
 
-    - name: "15.2 | Desplegar auditd.conf completo"
+    - name: "15.2 | Desplegar auditd.conf"
       ansible.builtin.copy:
         src: files/auditd.conf
         dest: /etc/audit/auditd.conf
@@ -644,45 +537,23 @@
       notify: restart auditd
       tags: [audit]
 
-    - name: "15.3 | Iniciar y habilitar servicio auditd"
+    - name: "15.3 | Iniciar y habilitar auditd"
       ansible.builtin.shell: |
-        if systemctl is-active auditd.service > /dev/null 2>&1; then
-          echo "AUDITD_YA_ACTIVO"
-        elif systemctl start auditd.service 2>/dev/null; then
-          echo "AUDITD_INICIADO_SYSTEMD"
-        elif service auditd start 2>/dev/null; then
-          echo "AUDITD_INICIADO_SYSV"
-        else
-          echo "AUDITD_ERROR"
-          ls -la /lib/systemd/system/auditd* 2>&1 || echo "No systemd units"
-          ls -la /etc/init.d/auditd 2>&1 || echo "No SysV script"
-          exit 1
-        fi
-        systemctl enable auditd.service 2>/dev/null || update-rc.d auditd enable 2>/dev/null || true
-      register: auditd_result
-      changed_when: "'INICIADO' in auditd_result.stdout"
+        systemctl start auditd 2>/dev/null || service auditd start 2>/dev/null || true
+        systemctl enable auditd 2>/dev/null || update-rc.d auditd enable 2>/dev/null || true
+      changed_when: false
       tags: [audit]
 
-    - name: "15.3b | Estado de auditd"
-      ansible.builtin.debug:
-        msg: "{{ inventory_hostname }}: {{ auditd_result.stdout }}"
-      tags: [audit]
-
-    - name: "15.4 | CIS 33253-33272 | Desplegar reglas de auditoria CIS"
+    - name: "15.4 | CIS 33253-33272 | Reglas auditoria"
       ansible.builtin.copy:
         dest: /etc/audit/rules.d/99-cis-hardening.rules
         content: |
-          ## CIS Debian 13 — Reglas de auditoria
-          ## Drakos Cave SOC — Generado 2026-06-08
-
-          # -- Cambios en fecha/hora (CIS 33256) --
+          ## CIS Debian 13 — Reglas de auditoria — Drakos Cave SOC
           -a always,exit -F arch=b64 -S adjtimex,settimeofday -k time-change
           -a always,exit -F arch=b32 -S adjtimex,settimeofday,stime -k time-change
           -a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -k time-change
           -a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -k time-change
           -w /etc/localtime -p wa -k time-change
-
-          # -- Usuarios y grupos (CIS 33260) --
           -w /etc/group -p wa -k identity
           -w /etc/passwd -p wa -k identity
           -w /etc/gshadow -p wa -k identity
@@ -691,8 +562,6 @@
           -w /etc/nsswitch.conf -p wa -k identity
           -w /etc/pam.conf -p wa -k identity
           -w /etc/pam.d -p wa -k identity
-
-          # -- Cambios de red (CIS 33257) --
           -a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale
           -a always,exit -F arch=b32 -S sethostname,setdomainname -k system-locale
           -w /etc/issue -p wa -k system-locale
@@ -700,75 +569,47 @@
           -w /etc/hosts -p wa -k system-locale
           -w /etc/networks -p wa -k system-locale
           -w /etc/network/ -p wa -k system-locale
-
-          # -- MAC/AppArmor (CIS 33266) --
           -w /etc/apparmor/ -p wa -k MAC-policy
           -w /etc/apparmor.d/ -p wa -k MAC-policy
-
-          # -- Sudoers (CIS 33253) --
           -w /etc/sudoers -p wa -k scope
           -w /etc/sudoers.d/ -p wa -k scope
-
-          # -- Acciones sudo (CIS 33255) --
           -w /var/log/sudo.log -p wa -k sudo_log_file
-
-          # -- Acciones como otro usuario (CIS 33254) --
           -a always,exit -F arch=b64 -C euid!=uid -F auid!=unset -S execve -k user_emulation
           -a always,exit -F arch=b32 -C euid!=uid -F auid!=unset -S execve -k user_emulation
-
-          # -- Sesiones (CIS 33263) --
           -w /var/run/utmp -p wa -k session
           -w /var/log/wtmp -p wa -k session
           -w /var/log/btmp -p wa -k session
-
-          # -- Logins (CIS 33264) --
           -w /var/log/lastlog -p wa -k logins
           -w /var/run/faillock -p wa -k logins
-
-          # -- Cambios de permisos DAC (CIS 33261) --
           -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
           -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod
           -a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
           -a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=unset -k perm_mod
           -a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
           -a always,exit -F arch=b32 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -F auid!=unset -k perm_mod
-
-          # -- Acceso no autorizado (CIS 33259) --
           -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
           -a always,exit -F arch=b64 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
           -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access
           -a always,exit -F arch=b32 -S creat,open,openat,truncate,ftruncate -F exit=-EPERM -F auid>=1000 -F auid!=unset -k access
-
-          # -- Montajes (CIS 33262) --
           -a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts
           -a always,exit -F arch=b32 -S mount -F auid>=1000 -F auid!=unset -k mounts
-
-          # -- Eliminacion de archivos (CIS 33265) --
           -a always,exit -F arch=b64 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
           -a always,exit -F arch=b32 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete
-
-          # -- Modulos de kernel (CIS 33271) --
           -a always,exit -F arch=b64 -S init_module,finit_module,delete_module,create_module,query_module -F auid>=1000 -F auid!=unset -k kernel_modules
           -a always,exit -F path=/usr/bin/kmod -F perm=x -F auid>=1000 -F auid!=unset -k kernel_modules
-
-          # -- Comandos de permisos (CIS 33267-33270) --
           -a always,exit -F path=/usr/bin/chcon -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
           -a always,exit -F path=/usr/bin/setfacl -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
           -a always,exit -F path=/usr/bin/chacl -F perm=x -F auid>=1000 -F auid!=unset -k perm_chng
           -a always,exit -F path=/usr/sbin/usermod -F perm=x -F auid>=1000 -F auid!=unset -k usermod
-
-          # -- INMUTABLE — Ultima linea (CIS 33272) --
           -e 2
         owner: root
         group: root
         mode: '0640'
       notify: restart auditd
-      tags: [audit, rules]
+      tags: [audit]
 
-    # =========================================================================
-    # SECCION 16: RSYSLOG + JOURNAL REMOTE
-    # =========================================================================
-    - name: "16.1 | CIS 33229 | Instalar systemd-journal-remote"
+    # === SECCION 16: RSYSLOG ===
+    - name: "16.1 | CIS 33229 | Instalar journal-remote"
       ansible.builtin.apt:
         name: systemd-journal-remote
         state: present
@@ -780,7 +621,7 @@
         state: present
       tags: [logging]
 
-    - name: "16.2b | Configurar paquetes y recargar systemd"
+    - name: "16.2b | dpkg configure + daemon-reload"
       ansible.builtin.shell: |
         export DEBIAN_FRONTEND=noninteractive
         dpkg --configure -a 2>&1 || true
@@ -788,71 +629,66 @@
       changed_when: false
       tags: [logging]
 
-    - name: "16.3 | CIS 33237 | Habilitar rsyslog"
+    - name: "16.3 | Iniciar rsyslog"
       ansible.builtin.shell: |
-        systemctl start rsyslog.service 2>/dev/null || service rsyslog start 2>/dev/null || true
-        systemctl enable rsyslog.service 2>/dev/null || update-rc.d rsyslog enable 2>/dev/null || true
+        systemctl start rsyslog 2>/dev/null || service rsyslog start 2>/dev/null || true
+        systemctl enable rsyslog 2>/dev/null || true
       changed_when: false
       tags: [logging]
 
-    - name: "16.4 | Configurar permisos de archivos de log"
-      ansible.builtin.lineinfile:
-        path: /etc/rsyslog.conf
-        regexp: '^\$FileCreateMode'
-        line: '$FileCreateMode 0640'
-        backup: true
+    - name: "16.4 | Permisos archivos de log"
+      ansible.builtin.shell: |
+        if [ -f /etc/rsyslog.conf ]; then
+          grep -q '^\$FileCreateMode' /etc/rsyslog.conf && \
+            sed -i 's/^\$FileCreateMode.*/$FileCreateMode 0640/' /etc/rsyslog.conf || \
+            echo '$FileCreateMode 0640' >> /etc/rsyslog.conf
+        else
+          echo '$FileCreateMode 0640' > /etc/rsyslog.conf
+        fi
+      changed_when: false
       notify: restart rsyslog
       tags: [logging]
 
-    # =========================================================================
-    # SECCION 17: AIDE
-    # =========================================================================
+    # === SECCION 17: AIDE ===
     - name: "17.1 | CIS 33284 | Instalar AIDE"
       ansible.builtin.apt:
-        name:
-          - aide
-          - aide-common
+        name: [aide, aide-common]
         state: present
-      tags: [aide, integrity]
+      tags: [aide]
 
-    - name: "17.2 | Verificar si la base de datos AIDE existe"
+    - name: "17.2 | Verificar DB AIDE"
       ansible.builtin.stat:
         path: /var/lib/aide/aide.db
       register: aide_db
-      tags: [aide, integrity]
+      tags: [aide]
 
-    - name: "17.3 | Inicializar base de datos AIDE (si no existe)"
-      ansible.builtin.command:
-        cmd: aideinit
+    - name: "17.3 | Inicializar AIDE"
+      ansible.builtin.command: aideinit
       when: not aide_db.stat.exists
       async: 600
       poll: 30
-      tags: [aide, integrity]
+      tags: [aide]
 
-    - name: "17.4 | Mover archivo de DB AIDE"
-      ansible.builtin.command:
-        cmd: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+    - name: "17.4 | Mover DB AIDE"
+      ansible.builtin.command: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
       args:
         removes: /var/lib/aide/aide.db.new
       when: not aide_db.stat.exists
-      tags: [aide, integrity]
+      tags: [aide]
 
-    # =========================================================================
-    # SECCION 18: SHELL TIMEOUT + CORE DUMPS
-    # =========================================================================
-    - name: "18.1 | Configurar TMOUT para sesiones inactivas"
+    # === SECCION 18: TIMEOUT + CORE DUMPS ===
+    - name: "18.1 | TMOUT"
       ansible.builtin.copy:
         dest: /etc/profile.d/99-cis-tmout.sh
         content: |
-          # CIS Hardening — Shell timeout ({{ shell_timeout }}s = 15 min)
           readonly TMOUT={{ shell_timeout }}
           export TMOUT
         owner: root
         group: root
         mode: '0644'
-      tags: [shell, timeout]
+      tags: [timeout]
 
-    - name: "18.2 | Deshabilitar core dumps via limits.conf"
+    - name: "18.2 | Core dumps limits"
       ansible.builtin.copy:
         dest: /etc/security/limits.d/99-cis-coredump.conf
         content: |
@@ -862,7 +698,7 @@
         mode: '0644'
       tags: [security]
 
-    - name: "18.3 | Deshabilitar core dumps via sysctl"
+    - name: "18.3 | Core dumps sysctl"
       ansible.builtin.sysctl:
         name: fs.suid_dumpable
         value: "0"
@@ -873,23 +709,21 @@
       notify: reload sysctl
       tags: [security]
 
-    # =========================================================================
-    # SECCION 19: VALIDACIONES POST-HARDENING
-    # =========================================================================
-    - name: "19.1 | Verificar cuentas con UID 0 adicionales"
+    # === SECCION 19: VALIDACIONES ===
+    - name: "19.1 | Verificar cuentas UID 0"
       ansible.builtin.shell: |
         awk -F: '($3 == 0 && $1 != "root") {print $1}' /etc/passwd
       register: uid_zero_check
       changed_when: false
-      tags: [security, validation]
+      tags: [validation]
 
-    - name: "19.2 | ALERTA si hay cuentas UID 0 adicionales"
+    - name: "19.2 | ALERTA UID 0"
       ansible.builtin.fail:
-        msg: "ALERTA SEGURIDAD: Cuentas con UID 0 adicionales: {{ uid_zero_check.stdout }}"
+        msg: "ALERTA: Cuentas UID 0 adicionales: {{ uid_zero_check.stdout }}"
       when: uid_zero_check.stdout | length > 0
-      tags: [security, validation]
+      tags: [validation]
 
-    - name: "19.3 | Verificar que SSH sigue respondiendo"
+    - name: "19.3 | Verificar SSH responde"
       ansible.builtin.wait_for:
         port: 22
         host: "{{ inventory_hostname }}"
@@ -900,42 +734,14 @@
       tags: [validation]
 
   post_tasks:
-    - name: "POST | Resumen de hardening aplicado"
+    - name: "POST | Resumen"
       ansible.builtin.debug:
         msg: |
-          =============================================================
+          =====================================================
           HARDENING CIS DEBIAN 13 COMPLETADO
-          =============================================================
+          =====================================================
           Host:  {{ inventory_hostname }}
           OS:    {{ ansible_distribution }} {{ ansible_distribution_version }}
           Fecha: {{ ansible_date_time.iso8601 }}
-          -------------------------------------------------------------
-          Controles aplicados:
-            [OK] /dev/shm hardened (nodev,nosuid,noexec)
-            [OK] IPv6 deshabilitado
-            [OK] Network sysctl hardening (17 parametros)
-            [OK] Bluetooth deshabilitado
-            [OK] AppArmor instalado y habilitado
-            [OK] Banners configurados (/etc/issue, issue.net, motd)
-            [OK] X Window removido
-            [OK] Chrony NTP habilitado
-            [OK] SSH hardened (14 params + MACs + Ciphers + KEX)
-            [OK] Sudo: log, timeout, restriccion su
-            [OK] Permisos: cron, passwd, shadow, gshadow, opasswd, grub
-            [OK] Password policies: login.defs + yescrypt + INACTIVE=45
-            [OK] PAM: nullok eliminado
-            [OK] auditd: instalado + configurado + 40 reglas CIS
-            [OK] rsyslog + journal-remote habilitados
-            [OK] AIDE instalado
-            [OK] Shell timeout (900s)
-            [OK] Core dumps deshabilitados
-          -------------------------------------------------------------
-          EXCLUIDO (requiere config por servidor):
-            [--] Firewall nftables/iptables
-          -------------------------------------------------------------
-          REQUIERE REBOOT para aplicar completamente:
-            - AppArmor en GRUB
-            - audit=1 y audit_backlog_limit en GRUB
-            - Reglas de auditoria inmutables (-e 2)
-          =============================================================
+          =====================================================
       tags: [always]
