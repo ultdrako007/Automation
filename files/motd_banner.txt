@@ -1,0 +1,100 @@
+=============================================================
+             DRAKOS CAVE  --  S O C
+      Guardianes del Reino Digital  |  Sede Mexico
+=============================================================
+        CONSEJO DE SEGURIDAD DE LA CUEVA
+=============================================================
+
+  Aventurero, antes de cruzar las puertas del Reino,
+  el Consejo de Seguridad te recuerda las reglas
+  sagradas de la Cueva:
+
+  [CONTRASENAS]
+      Tu contrasena es Excalibur: unica, compleja y solo
+      TU puedes empunarla. Minimo 14 caracteres, mezcla
+      mayusculas, minusculas, numeros y simbolos.
+      No la reutilices en otros reinos (servicios).
+      No la escribas en pergaminos visibles (post-its).
+      Usa un gestor de contrasenas. En serio.
+
+  [PHISHING]
+      El Phishing evoluciona mas rapido que un dragon.
+      "Tu cuenta sera suspendida en 24 hrs" -- Clasico.
+      "Ganaste un cofre de oro, haz clic aqui" -- Trampa.
+      Antes de hacer clic: respira, revisa el remitente,
+      pasa el cursor sobre el enlace sin hacer clic.
+      Si algo se siente raro, ES raro. Reportalo al SOC.
+
+  [MFA / 2FA]
+      La autenticacion multifactor es tu armadura de
+      mithril. Sin ella, hasta un goblin te derrota.
+      Activala en TODO: correo, VPN, nube, repositorios.
+      Nunca compartas tus codigos OTP con nadie, ni
+      siquiera con alguien que diga ser "soporte de TI".
+
+  [INGENIERIA SOCIAL]
+      No todo aventurero es quien dice ser. Si alguien
+      te pide credenciales, accesos o informacion sensible
+      por telefono, chat o correo: VERIFICA su identidad.
+      El SOC y TI NUNCA te pediran tu contrasena.
+
+  [USB Y DISPOSITIVOS]
+      Las USB encontradas son trampas del enemigo.
+      No conectes dispositivos desconocidos. Jamas.
+      Solo usa dispositivos autorizados y cifrados.
+
+  [VPN Y CONEXIONES REMOTAS]
+      Fuera de la Cueva, siempre usa la VPN.
+      No te conectes a redes Wi-Fi publicas sin VPN.
+      Las redes abiertas son territorio enemigo: cualquiera
+      puede interceptar tu trafico.
+
+  [BLOQUEO DE PANTALLA]
+      Si te levantas de tu puesto, bloquea tu sesion.
+      Windows: Win+L  |  Linux: Super+L  |  Mac: Ctrl+Cmd+Q
+      Un equipo desbloqueado es una puerta abierta.
+
+  [CLASIFICACION DE DATOS]
+      No toda informacion se comparte igual.
+      Confidencial: solo personal autorizado.
+      Interno: dentro de la organizacion.
+      Publico: puede compartirse libremente.
+      Si no sabes como clasificar algo, pregunta al SOC.
+
+  [ACTUALIZACIONES]
+      Mantener tu equipo actualizado no es opcional.
+      Los parches de seguridad cierran puertas que los
+      atacantes intentan abrir. No pospongas las
+      actualizaciones: un sistema sin parchar es un
+      castillo con las murallas rotas.
+
+  [ESCRITORIO LIMPIO]
+      No dejes documentos sensibles sobre tu escritorio.
+      Al terminar el dia, guarda todo bajo llave.
+      Las pantallas no deben ser visibles desde pasillos
+      o ventanas exteriores.
+
+  [REPORTE DE INCIDENTES]
+      Si algo huele a azufre digital:
+      > Correo sospechoso    -> NO abrir, reportar al SOC
+      > USB misteriosa       -> NO conectar, avisar al SOC
+      > Comportamiento raro  -> REPORTAR al SOC
+      > Acceso no autorizado -> ALERTAR de inmediato
+
+      El SOC esta activo 24/7. Un reporte a tiempo vale
+      mas que mil backups. Es mejor una falsa alarma que
+      un dragon suelto en la red.
+
+  [REGLA DE ORO]
+      Si tienes duda, pregunta.
+      La seguridad es responsabilidad de TODOS en la Cueva.
+
+-------------------------------------------------------------
+  ADVERTENCIA: Solo personal autorizado de Drakos Cave.
+  Toda actividad es monitoreada, registrada y auditada.
+  El acceso indebido sera procesado conforme a la ley
+  y a las politicas internas de la organizacion.
+
+          Protege el tesoro. Defiende la Cueva.
+             -- Drakos Cave SOC  |  Seguridad TI
+=============================================================
