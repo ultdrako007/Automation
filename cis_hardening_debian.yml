@@ -230,7 +230,9 @@
         dest: /etc/motd
         owner: root
         group: root
-        mode: '0644'
+        mode: '0644'     
+        follow: true          # ← AGREGAR
+      ignore_errors: true      # ← AGREGAR
       tags: [banners]
 
     - name: "7.4 | Permisos /etc/motd"
@@ -247,6 +249,8 @@
         owner: root
         group: root
         mode: '0644'
+        follow: true          # ← AGREGAR
+      ignore_errors: true      # ← AGREGAR
       tags: [banners]
 
     - name: "7.6 | Permisos /etc/issue.net"
@@ -255,6 +259,8 @@
         owner: root
         group: root
         mode: '0644'
+        follow: true          # ← AGREGAR
+      ignore_errors: true      # ← AGREGAR
       tags: [banners]
 
     # === SECCION 8: SERVICIOS ===
