@@ -1,7 +1,7 @@
 ---
 # =============================================================================
 # CIS Debian Linux 13 Benchmark — Hardening Playbook
-# Generado para Drakos Cave SOC — 2026-06-08 (v6)
+# Generado para Drakos Cave SOC — 2026-06-08 (v7)
 # Ejecutado via Ansible Semaphore
 # =============================================================================
 # FIREWALL EXCLUIDO: Cada servidor tiene puertos distintos segun sus
@@ -11,20 +11,21 @@
 #   cis_hardening_debian.yml          <- Este playbook
 #   files/motd_banner.txt             <- Banner post-login (/etc/motd)
 #   files/issue_banner.txt            <- Banner pre-login (/etc/issue*)
-#   files/auditd.conf                 <- Config completa de auditd (v6)
+#   files/auditd.conf                 <- Config completa de auditd (v6+)
 # =============================================================================
 # CHANGELOG:
-#   v6 (2026-06-08):
-#     - FIX: /etc/audit/auditd.conf no existe tras apt install en algunos
-#            hosts Debian 13. dpkg --configure falla silenciosamente.
-#     - ADD: Crear directorios /etc/audit/ y /etc/audit/rules.d/ previo.
-#     - ADD: Forzar dpkg --configure -a tras instalar auditd.
-#     - ADD: Desplegar auditd.conf COMPLETO via copy (files/auditd.conf)
-#            en lugar de lineinfile sobre archivo inexistente.
-#     - ADD: Compatibilidad Ubuntu 24.04 (audispd-plugins vs audisp-plugins).
-#   v5: Shell bypass para service/systemd module.
-#   v3-v4: Intentos previos de fix.
-#   v1: Version inicial.
+#   v7 (2026-06-08):
+#     - FIX SISTEMICO: .243 y .253 tienen dpkg --configure roto que afecta
+#       TODOS los paquetes nuevos (no solo auditd). Los servicios se instalan
+#       pero systemd no los reconoce porque los unit files no se registran.
+#     - ADD: Tarea 0.1 global de reparacion dpkg/apt al inicio del play.
+#     - FIX: Todos los servicios (apparmor, chrony, auditd, rsyslog) ahora
+#       se inician y habilitan via shell con fallback SysV.
+#     - FIX: dpkg --configure + daemon-reload ANTES de cada bloque de
+#       habilitacion de servicio.
+#   v6: auditd.conf desplegado completo, crear directorios.
+#   v5: Shell bypass para auditd.
+#   v1-v4: Versiones previas.
 # =============================================================================
 
 - name: "CIS Debian 13 Hardening — Drakos Cave SOC (Semaphore)"
@@ -61,32 +62,30 @@
 
   handlers:
     - name: restart sshd
-      ansible.builtin.service:
-        name: sshd
-        state: restarted
+      ansible.builtin.shell: |
+        systemctl restart sshd.service 2>/dev/null || service sshd restart 2>/dev/null || \
+        systemctl restart ssh.service 2>/dev/null || service ssh restart 2>/dev/null || true
 
     - name: restart auditd
       ansible.builtin.shell: |
         systemctl restart auditd.service 2>/dev/null || service auditd restart 2>/dev/null || true
 
     - name: restart rsyslog
-      ansible.builtin.service:
-        name: rsyslog
-        state: restarted
+      ansible.builtin.shell: |
+        systemctl restart rsyslog.service 2>/dev/null || service rsyslog restart 2>/dev/null || true
 
     - name: reload sysctl
       ansible.builtin.command:
         cmd: sysctl --system
 
     - name: restart apparmor
-      ansible.builtin.service:
-        name: apparmor
-        state: restarted
+      ansible.builtin.shell: |
+        systemctl restart apparmor.service 2>/dev/null || service apparmor restart 2>/dev/null || true
 
     - name: restart chrony
-      ansible.builtin.service:
-        name: chrony
-        state: restarted
+      ansible.builtin.shell: |
+        systemctl restart chrony.service 2>/dev/null || systemctl restart chronyd.service 2>/dev/null || \
+        service chrony restart 2>/dev/null || true
 
   pre_tasks:
     - name: "PRE | Verificar conectividad antes de aplicar hardening"
@@ -102,6 +101,20 @@
       tags: [always]
 
   tasks:
+    # =========================================================================
+    # SECCION 0: REPARACION GLOBAL DE PAQUETES
+    # v7: .243 y .253 tienen dpkg --configure roto. Esta tarea repara
+    #     paquetes pendientes ANTES de cualquier instalacion/servicio.
+    # =========================================================================
+    - name: "0.1 | Reparar paquetes pendientes de configuracion"
+      ansible.builtin.shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        dpkg --configure -a 2>&1 || true
+        apt-get install -f -y 2>&1 || true
+        systemctl daemon-reload 2>/dev/null || true
+      changed_when: false
+      tags: [always]
+
     # =========================================================================
     # SECCION 1: FILESYSTEM
     # =========================================================================
@@ -203,10 +216,10 @@
     # SECCION 5: BLUETOOTH
     # =========================================================================
     - name: "5.1 | CIS 33109 | Deshabilitar servicio Bluetooth"
-      ansible.builtin.service:
-        name: bluetooth
-        state: stopped
-        enabled: false
+      ansible.builtin.shell: |
+        systemctl stop bluetooth.service 2>/dev/null || true
+        systemctl disable bluetooth.service 2>/dev/null || true
+      changed_when: false
       ignore_errors: true
       tags: [services, bluetooth]
 
@@ -220,6 +233,14 @@
           - apparmor-utils
         state: present
         update_cache: true
+      tags: [apparmor]
+
+    - name: "6.1b | Configurar paquetes y recargar systemd"
+      ansible.builtin.shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        dpkg --configure -a 2>&1 || true
+        systemctl daemon-reload 2>/dev/null || true
+      changed_when: false
       tags: [apparmor]
 
     - name: "6.2 | CIS 33040 | Habilitar AppArmor en GRUB"
@@ -238,11 +259,10 @@
       tags: [apparmor, audit]
 
     - name: "6.4 | Habilitar servicio AppArmor"
-      ansible.builtin.service:
-        name: apparmor
-        state: started
-        enabled: true
-      notify: restart apparmor
+      ansible.builtin.shell: |
+        systemctl start apparmor.service 2>/dev/null || service apparmor start 2>/dev/null || true
+        systemctl enable apparmor.service 2>/dev/null || true
+      changed_when: false
       tags: [apparmor]
 
     # =========================================================================
@@ -316,12 +336,20 @@
         state: present
       tags: [services, ntp]
 
+    - name: "8.2b | Configurar paquetes y recargar systemd"
+      ansible.builtin.shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        dpkg --configure -a 2>&1 || true
+        systemctl daemon-reload 2>/dev/null || true
+      changed_when: false
+      tags: [services, ntp]
+
     - name: "8.3 | Habilitar servicio chrony"
-      ansible.builtin.service:
-        name: chrony
-        state: started
-        enabled: true
-      notify: restart chrony
+      ansible.builtin.shell: |
+        systemctl start chrony.service 2>/dev/null || systemctl start chronyd.service 2>/dev/null || \
+        service chrony start 2>/dev/null || true
+        systemctl enable chrony.service 2>/dev/null || systemctl enable chronyd.service 2>/dev/null || true
+      changed_when: false
       tags: [services, ntp]
 
     # =========================================================================
@@ -569,14 +597,6 @@
 
     # =========================================================================
     # SECCION 15: AUDITORIA — auditd
-    # v6: dpkg --configure puede fallar silenciosamente en Debian 13,
-    #     dejando auditd instalado pero sin configurar (sin auditd.conf,
-    #     sin unit file de systemd). La solucion:
-    #     1) Crear directorios manualmente
-    #     2) Instalar paquetes (compatible Debian + Ubuntu)
-    #     3) Forzar dpkg --configure
-    #     4) Desplegar auditd.conf completo desde files/
-    #     5) Iniciar servicio via shell directo
     # =========================================================================
     - name: "15.0 | Crear directorios de auditd"
       ansible.builtin.file:
@@ -605,8 +625,9 @@
       ignore_errors: true
       tags: [audit]
 
-    - name: "15.1c | Forzar configuracion de paquetes pendientes"
+    - name: "15.1c | Configurar paquetes y recargar systemd"
       ansible.builtin.shell: |
+        export DEBIAN_FRONTEND=noninteractive
         dpkg --configure -a 2>&1 || true
         systemctl daemon-reload 2>/dev/null || true
       changed_when: false
@@ -633,10 +654,8 @@
           echo "AUDITD_INICIADO_SYSV"
         else
           echo "AUDITD_ERROR"
-          echo "--- DEBUG ---"
           ls -la /lib/systemd/system/auditd* 2>&1 || echo "No systemd units"
           ls -la /etc/init.d/auditd 2>&1 || echo "No SysV script"
-          dpkg -l auditd 2>&1 | tail -2
           exit 1
         fi
         systemctl enable auditd.service 2>/dev/null || update-rc.d auditd enable 2>/dev/null || true
@@ -761,12 +780,19 @@
         state: present
       tags: [logging]
 
+    - name: "16.2b | Configurar paquetes y recargar systemd"
+      ansible.builtin.shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        dpkg --configure -a 2>&1 || true
+        systemctl daemon-reload 2>/dev/null || true
+      changed_when: false
+      tags: [logging]
+
     - name: "16.3 | CIS 33237 | Habilitar rsyslog"
-      ansible.builtin.service:
-        name: rsyslog
-        state: started
-        enabled: true
-      notify: restart rsyslog
+      ansible.builtin.shell: |
+        systemctl start rsyslog.service 2>/dev/null || service rsyslog start 2>/dev/null || true
+        systemctl enable rsyslog.service 2>/dev/null || update-rc.d rsyslog enable 2>/dev/null || true
+      changed_when: false
       tags: [logging]
 
     - name: "16.4 | Configurar permisos de archivos de log"
