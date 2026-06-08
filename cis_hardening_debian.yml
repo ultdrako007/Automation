@@ -1,9 +1,7 @@
 ---
-# =============================================================================
-# CIS Debian 13 Hardening v7 — Drakos Cave SOC — 2026-06-08
-# =============================================================================
+# CIS Debian 13 Hardening v7b — Drakos Cave SOC — 2026-06-08
 
-- name: "CIS Debian 13 Hardening v7 — Drakos Cave SOC"
+- name: "CIS Debian 13 Hardening v7b — Drakos Cave SOC"
   hosts: all
   become: true
   gather_facts: true
@@ -230,9 +228,7 @@
         dest: /etc/motd
         owner: root
         group: root
-        mode: '0644'     
-        follow: true          # ← AGREGAR
-      ignore_errors: true      # ← AGREGAR
+        mode: '0644'
       tags: [banners]
 
     - name: "7.4 | Permisos /etc/motd"
@@ -241,6 +237,8 @@
         owner: root
         group: root
         mode: '0644'
+        follow: true
+      ignore_errors: true
       tags: [banners]
 
     - name: "7.5 | Permisos /etc/issue"
@@ -249,8 +247,8 @@
         owner: root
         group: root
         mode: '0644'
-        follow: true          # ← AGREGAR
-      ignore_errors: true      # ← AGREGAR
+        follow: true
+      ignore_errors: true
       tags: [banners]
 
     - name: "7.6 | Permisos /etc/issue.net"
@@ -259,8 +257,8 @@
         owner: root
         group: root
         mode: '0644'
-        follow: true          # ← AGREGAR
-      ignore_errors: true      # ← AGREGAR
+        follow: true
+      ignore_errors: true
       tags: [banners]
 
     # === SECCION 8: SERVICIOS ===
