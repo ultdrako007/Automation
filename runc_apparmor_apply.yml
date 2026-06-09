@@ -9,39 +9,51 @@
 
   tasks:
 
-  - name: 🔍 Validar reglas
+  - name: 🔍 Verificar state.json
     stat:
-      path: "{{ working_dir }}/rules_optimized.txt"
-    register: rules
+      path: "{{ working_dir }}/state.json"
+    register: state_stat
 
-  - name: 🧠 Determinar aplicación
+  - name: 📥 Leer estado
+    slurp:
+      src: "{{ working_dir }}/state.json"
+    register: state_file
+    when: state_stat.stat.exists
+
+  - name: 🧠 Parsear estado
     set_fact:
-      apparmor_active: "{{ rules.stat.exists and rules.stat.size > 0 }}"
+      state: "{{ state_file.content | b64decode | from_json }}"
+    when: state_stat.stat.exists
 
-  - name: 📊 Estado
+  - name: 🧠 Default
+    set_fact:
+      state:
+        active: false
+    when: not state_stat.stat.exists
+
+  - name: 📊 Estado Apply
     debug:
-      msg: "{{ inventory_hostname }} → {{ 'APLICAR ✅' if apparmor_active else 'OMITIDO 🚫' }}"
+      msg: "{{ inventory_hostname }} → {{ 'APLICAR ✅' if state.active else 'OMITIDO 🚫' }}"
 
   - name: 💾 Backup
     copy:
       src: "{{ profile }}"
       dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
       remote_src: yes
-    when: apparmor_active
+    when: state.active
     ignore_errors: yes
 
   - name: 🔧 Insertar reglas
     blockinfile:
       path: "{{ profile }}"
-      marker: "# ANSIBLE MANAGED"
+      marker: "# ANSIBLE MANAGED RUNC"
       block: "{{ lookup('file', working_dir + '/rules_optimized.txt') }}"
-    when: apparmor_active
+    when: state.active
 
   - name: 🔄 Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
-    when: apparmor_active
+    when: state.active
 
   - name: 🔒 Enforce
     command: aa-enforce usr.bin.runc
-    when: apparmor_active
-``
+    when: state.active
