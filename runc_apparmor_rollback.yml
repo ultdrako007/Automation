@@ -1,0 +1,17 @@
+---
+- name: Rollback AppArmor
+  hosts: all
+  become: yes
+
+  tasks:
+
+  - name: Restaurar último backup
+    shell: |
+      cp $(ls -t /etc/apparmor.d/usr.bin.runc.bak_* | head -1) \
+         /etc/apparmor.d/usr.bin.runc
+
+  - name: Recargar profile
+    command: apparmor_parser -r /etc/apparmor.d/usr.bin.runc
+
+  - name: Volver a complain (seguro)
+    command: aa-complain usr.bin.runc
