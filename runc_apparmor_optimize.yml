@@ -8,18 +8,31 @@
 
   tasks:
 
-  - name: 🔍 Validar paths
+  - name: 🔍 Verificar state.json
     stat:
-      path: "{{ working_dir }}/runc_paths.txt"
-    register: paths_file
+      path: "{{ working_dir }}/state.json"
+    register: state_stat
 
-  - name: 🧠 Determinar optimización
+  - name: 📥 Leer estado
+    slurp:
+      src: "{{ working_dir }}/state.json"
+    register: state_file
+    when: state_stat.stat.exists
+
+  - name: 🧠 Parsear estado
     set_fact:
-      apparmor_active: "{{ paths_file.stat.exists and paths_file.stat.size > 0 }}"
+      state: "{{ state_file.content | b64decode | from_json }}"
+    when: state_stat.stat.exists
 
-  - name: 📊 Estado
+  - name: 🧠 Default
+    set_fact:
+      state:
+        active: false
+    when: not state_stat.stat.exists
+
+  - name: 📊 Estado Optimize
     debug:
-      msg: "{{ inventory_hostname }} → {{ 'OPTIMIZAR ✅' if apparmor_active else 'OMITIDO 🚫' }}"
+      msg: "{{ inventory_hostname }} → {{ 'OPTIMIZAR ✅' if state.active else 'OMITIDO 🚫' }}"
 
   - name: ⚙️ Optimizar reglas
     shell: |
@@ -29,4 +42,4 @@
       sed 's|/opt/containerd/.*|/opt/containerd/**|' | \
       sed 's|/run/containerd/.*|/run/containerd/**|' | \
       sort | uniq > {{ working_dir }}/rules_optimized.txt
-    when: apparmor_active
+    when: state.active
