@@ -1,0 +1,73 @@
+---
+- name: Ajuste de AppArmor para runc (post-hardening)
+  hosts: linux_servers
+  become: yes
+  gather_facts: yes
+
+  vars:
+    backup_dir: /root/apparmor_backup_{{ ansible_date_time.iso8601 }}
+    runc_profile_path: /etc/apparmor.d/usr.bin.runc
+
+  tasks:
+
+  - name: ✅ Validar que AppArmor esté instalado
+    command: aa-status
+    register: apparmor_status
+    failed_when: false
+    changed_when: false
+
+  - name: ❌ Falla si AppArmor no está activo
+    fail:
+      msg: "AppArmor no está activo en este host"
+    when: apparmor_status.rc != 0
+
+  - name: 📁 Crear directorio de respaldo
+    file:
+      path: "{{ backup_dir }}"
+      state: directory
+      mode: '0755'
+
+  - name: 💾 Respaldar profile de runc
+    copy:
+      src: "{{ runc_profile_path }}"
+      dest: "{{ backup_dir }}/usr.bin.runc.bak"
+      remote_src: yes
+    ignore_errors: yes
+
+  - name: 🔍 Verificar existencia del profile de runc
+    stat:
+      path: "{{ runc_profile_path }}"
+    register: runc_profile
+
+  - name: ⚠️ Aviso si no existe profile
+    debug:
+      msg: "No se encontró el profile de runc, se omitirá ajuste"
+    when: not runc_profile.stat.exists
+
+  - name: 🔓 Cambiar runc a modo COMPLAIN (NO bloquea, solo log)
+    command: aa-complain usr.bin.runc
+    when: runc_profile.stat.exists
+
+  - name: ✅ Verificar estado actual de AppArmor
+    command: aa-status
+    register: final_status
+    changed_when: false
+
+  - name: 📊 Mostrar estado final
+    debug:
+      var: final_status.stdout_lines
+
+  - name: 🔄 Reiniciar AppArmor (opcional pero recomendado)
+    service:
+      name: apparmor
+      state: restarted
+
+  - name: ✅ Validación de contenedores (docker)
+    command: docker ps
+    register: docker_status
+    failed_when: false
+    changed_when: false
+
+  - name: 📊 Estado Docker
+    debug:
+      var: docker_status.stdout_lines
