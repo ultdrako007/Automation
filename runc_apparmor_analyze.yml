@@ -1,42 +1,31 @@
 ---
-- name: Analyze inteligente AppArmor basado en logs reales
+- name: Analyze inteligente AppArmor
   hosts: all
   become: yes
-  gather_facts: yes
 
   vars:
     working_dir: /tmp/apparmor_tuning
 
   tasks:
 
-  - name: 🔍 Verificar si existe log recolectado
+  - name: 🔍 Validar si hay datos
     stat:
       path: "{{ working_dir }}/runc_raw.log"
     register: log_file
 
-  - name: 🧠 Determinar si el host tiene datos para analizar
+  - name: 🧠 Determinar ejecución
     set_fact:
-      analyze_applicable: "{{ log_file.stat.exists and log_file.stat.size > 0 }}"
+      apparmor_active: "{{ log_file.stat.exists and log_file.stat.size > 0 }}"
 
-  - name: 📊 Estado Analyze
+  - name: 📊 Estado
     debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'ANALIZAR ✅' if analyze_applicable else 'SIN DATOS 🚫' }}
+      msg: "{{ inventory_hostname }} → {{ 'ANALIZAR ✅' if apparmor_active else 'OMITIDO 🚫' }}"
 
-  - name: 🔍 Extraer paths únicos
+  - name: 🔍 Extraer paths
     shell: |
       cat {{ working_dir }}/runc_raw.log | \
       grep 'name=' | \
       awk -F 'name=' '{print $2}' | \
       awk '{print $1}' | tr -d '"' | \
       sort | uniq > {{ working_dir }}/runc_paths.txt
-    args:
-      executable: /bin/bash
-    when: analyze_applicable
-
-  - name: 🚫 Host sin datos
-    debug:
-      msg: "Sin eventos AppArmor, se omite análisis"
-    when: not analyze_applicable
-``
+    when: apparmor_active
