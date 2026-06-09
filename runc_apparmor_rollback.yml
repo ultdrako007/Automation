@@ -9,15 +9,16 @@
   tasks:
 
   - name: 🔍 Buscar backup
-    shell: ls -t {{ profile }}.bak_* | head -1
+    shell: ls -t {{ profile }}.bak_* 2>/dev/null | head -1
     register: backup
+    changed_when: false
     failed_when: false
 
-  - name: 🧠 Validar rollback
+  - name: 🧠 Determinar rollback
     set_fact:
       rollback: "{{ backup.stdout != '' }}"
 
-  - name: 📊 Estado
+  - name: 📊 Estado Rollback
     debug:
       msg: "{{ inventory_hostname }} → {{ 'ROLLBACK ✅' if rollback else 'SIN BACKUP 🚫' }}"
 
