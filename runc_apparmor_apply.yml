@@ -1,5 +1,5 @@
 ---
-- name: Apply inteligente AppArmor
+- name: Apply inteligente AppArmor (robusto)
   hosts: all
   become: yes
 
@@ -9,6 +9,7 @@
 
   tasks:
 
+  # 🔹 1. Validar state
   - name: 🔍 Verificar state.json
     stat:
       path: "{{ working_dir }}/state.json"
@@ -31,29 +32,59 @@
         active: false
     when: not state_stat.stat.exists
 
-  - name: 📊 Estado Apply
-    debug:
-      msg: "{{ inventory_hostname }} → {{ 'APLICAR ✅' if state.active else 'OMITIDO 🚫' }}"
+  # 🔹 2. Validar profile AppArmor
+  - name: 🔍 Verificar profile runc
+    stat:
+      path: "{{ profile }}"
+    register: profile_stat
 
-  - name: 💾 Backup
+  # 🔹 3. Validar reglas generadas
+  - name: 🔍 Verificar reglas optimizadas
+    stat:
+      path: "{{ working_dir }}/rules_optimized.txt"
+    register: rules_stat
+
+  # 🔹 4. Determinar si aplicar
+  - name: 🧠 Evaluar aplicación real
+    set_fact:
+      apply_ready: >
+        {{ state.active
+           and profile_stat.stat.exists
+           and rules_stat.stat.exists
+           and rules_stat.stat.size > 0 }}
+
+  # 🔹 5. Mostrar estado completo
+  - name: 📊 Estado Apply detallado
+    debug:
+      msg: >
+        {{ inventory_hostname }} →
+        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }} |
+        profile={{ profile_stat.stat.exists }},
+        rules={{ rules_stat.stat.exists }},
+        size={{ rules_stat.stat.size | default('0') }}
+
+  # 🔹 6. Backup (solo si aplica)
+  - name: 💾 Backup profile
     copy:
       src: "{{ profile }}"
       dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
       remote_src: yes
-    when: state.active
-    ignore_errors: yes
+    when: apply_ready
 
-  - name: 🔧 Insertar reglas
+  # 🔹 7. Insertar reglas
+  - name: 🔧 Aplicar reglas
     blockinfile:
       path: "{{ profile }}"
       marker: "# ANSIBLE MANAGED RUNC"
       block: "{{ lookup('file', working_dir + '/rules_optimized.txt') }}"
-    when: state.active
+    when: apply_ready
 
+  # 🔹 8. Recargar
   - name: 🔄 Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
-    when: state.active
+    when: apply_ready
 
-  - name: 🔒 Enforce
+  # 🔹 9. Enforce
+  - name: 🔒 Activar enforce
     command: aa-enforce usr.bin.runc
-    when: state.active
+    when: apply_ready
