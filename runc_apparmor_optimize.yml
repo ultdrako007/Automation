@@ -1,0 +1,24 @@
+---
+- name: Optimizar reglas AppArmor
+  hosts: all
+  become: yes
+
+  tasks:
+
+  - name: Agrupar reglas redundantes
+    shell: |
+      cat /tmp/runc_paths.txt | \
+      sed 's|/usr/lib/.*|/usr/lib/**|' | \
+      sed 's|/lib/.*|/lib/**|' | \
+      sed 's|/opt/containerd/.*|/opt/containerd/**|' | \
+      sort | uniq > /tmp/runc_paths_optimized.txt
+
+  - name: Generar reglas optimizadas
+    shell: |
+      echo "# Optimized AppArmor rules" > /tmp/runc_rules_final.txt
+      while read path; do
+        echo "$path r," >> /tmp/runc_rules_final.txt
+      done < /tmp/runc_paths_optimized.txt
+
+  - debug:
+      msg: "Reglas optimizadas listas en /tmp/runc_rules_final.txt"
