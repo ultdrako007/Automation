@@ -1,6 +1,6 @@
 ---
 - name: Ajuste de AppArmor para runc (post-hardening)
-  hosts: linux_servers
+  hosts: all
   become: yes
   gather_facts: yes
 
