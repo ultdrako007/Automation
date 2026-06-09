@@ -1,5 +1,5 @@
 ---
-- name: Auditoría AppArmor runc (VERSIÓN CORRECTA)
+- name: Auditoría AppArmor runc (final robusto)
   hosts: all
   become: yes
 
@@ -18,7 +18,7 @@
     failed_when: false
     changed_when: false
 
-  - name: Set runc flag
+  - name: Definir runc_present
     set_fact:
       runc_present: "{{ runc_check.rc == 0 }}"
 
@@ -32,33 +32,46 @@
     register: profile_stat
 
   ##################################################
-  # 3. OBTENER LISTA ENFORCE REAL
+  # 3. ESTADO APPARMOR
   ##################################################
 
-  - name: Obtener perfiles en enforce
+  - name: Obtener estado AppArmor (json)
     command: aa-status --json
     register: aa_json
     failed_when: false
     changed_when: false
     when: runc_present
 
-  - name: Parsear enforce real
+  ##################################################
+  # 4. DEFAULT (CLAVE)
+  ##################################################
+
+  - name: Definir enforce_active por defecto
+    set_fact:
+      enforce_active: false
+
+  ##################################################
+  # 5. PARSEAR SOLO SI APLICA
+  ##################################################
+
+  - name: Detectar enforce real
     set_fact:
       enforce_active: "{{ 'usr.bin.runc' in (aa_json.stdout | default('')) }}"
-    when: runc_present
+    when: runc_present and aa_json.stdout is defined
+    failed_when: false
 
   ##################################################
-  # 4. DETECTAR CONFLICTOS
+  # 6. VALIDAR BACKUPS
   ##################################################
 
-  - name: Verificar backups activos
+  - name: Verificar backups conflictivos
     shell: ls /etc/apparmor.d/usr.bin.runc.bak_* 2>/dev/null | wc -l
     register: backup_count
     changed_when: false
     failed_when: false
 
   ##################################################
-  # 5. RESULTADO FINAL
+  # 7. REPORTE DETALLADO
   ##################################################
 
   - name: Reporte final
@@ -71,11 +84,11 @@
         backups: {{ backup_count.stdout }}
 
   ##################################################
-  # 6. ESTADO GLOBAL
+  # 8. ESTADO CONSOLIDADO
   ##################################################
 
-  - name: Estado consolidado
+  - name: Estado global
     debug:
       msg: >
         {{ inventory_hostname }} →
-        {{ 'OK ✅' if (runc_present and profile_stat.stat.exists and enforce_active) else 'REVISAR ⚠️' }}
+        {{ 'OK ✅' if (runc_present and profile_stat.stat.exists and enforce_active) else 'N/A o Revisar ⚠️' }}
