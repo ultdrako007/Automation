@@ -1,17 +1,43 @@
 ---
-- name: Rollback AppArmor
+- name: Rollback seguro de AppArmor
   hosts: all
   become: yes
 
+  vars:
+    profile_path: /etc/apparmor.d/usr.bin.runc
+
   tasks:
 
-  - name: Restaurar último backup
+  - name: 🔍 Buscar backup disponible
     shell: |
-      cp $(ls -t /etc/apparmor.d/usr.bin.runc.bak_* | head -1) \
-         /etc/apparmor.d/usr.bin.runc
+      ls -t {{ profile_path }}.bak_* 2>/dev/null | head -1
+    register: backup_file
+    changed_when: false
+    failed_when: false
 
-  - name: Recargar profile
-    command: apparmor_parser -r /etc/apparmor.d/usr.bin.runc
+  - name: 🧠 Determinar si hay rollback
+    set_fact:
+      rollback_applicable: "{{ backup_file.stdout != '' }}"
 
-  - name: Volver a complain (seguro)
+  - name: 📊 Estado Rollback
+    debug:
+      msg: >
+        {{ inventory_hostname }} →
+        {{ 'ROLLBACK ✅' if rollback_applicable else 'SIN BACKUP 🚫' }}
+
+  - name: 🔄 Restaurar backup
+    command: cp {{ backup_file.stdout }} {{ profile_path }}
+    when: rollback_applicable
+
+  - name: 🔄 Recargar AppArmor
+    command: apparmor_parser -r {{ profile_path }}
+    when: rollback_applicable
+
+  - name: 🟡 Volver a complain (modo seguro)
     command: aa-complain usr.bin.runc
+    when: rollback_applicable
+
+  - name: 🚫 Sin rollback
+    debug:
+      msg: "No existe backup para restaurar"
+    when: not rollback_applicable
