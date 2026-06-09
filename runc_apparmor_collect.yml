@@ -1,115 +1,65 @@
 ---
-- name: Baseline inteligente AppArmor (detección + recolección segura)
+- name: Collect inteligente AppArmor (baseline dinámico)
   hosts: all
   become: yes
-  gather_facts: yes
 
   vars:
     working_dir: /tmp/apparmor_tuning
-    audit_log_path: /var/log/audit/audit.log
+    audit_log: /var/log/audit/audit.log
+    state_file: /tmp/apparmor_tuning/state.json
 
   tasks:
 
-  # 🔹 1. Validar Python interpreter warning (informativo)
-  - name: 📌 Mostrar versión de Python detectada
-    debug:
-      msg: >
-        Python en {{ inventory_hostname }} →
-        {{ ansible_facts.python.version.major | default('?') }}.
-        {{ ansible_facts.python.version.minor | default('?') }}
-    failed_when: false
-
-
-  # 🔹 2. Detectar Docker
-  - name: 🔍 Validar si Docker está instalado
+  - name: 🔍 Detectar Docker
     command: docker --version
     register: docker_check
     failed_when: false
     changed_when: false
 
-  # 🔹 3. Detectar runc (más preciso)
-  - name: 🔍 Validar si runc está presente
+  - name: 🔍 Detectar runc
     command: which runc
     register: runc_check
     failed_when: false
     changed_when: false
 
-  # 🔹 4. Definir contexto del host
-  - name: 🧠 Definir estado del host
+  - name: 🧠 Determinar aplicabilidad
     set_fact:
-      docker_installed: "{{ docker_check.rc == 0 }}"
-      runc_present: "{{ runc_check.rc == 0 }}"
-      apparmor_applicable: "{{ (docker_check.rc == 0) and (runc_check.rc == 0) }}"
+      apparmor_candidate: "{{ docker_check.rc == 0 and runc_check.rc == 0 }}"
 
-  # 🔹 5. Mostrar diagnóstico
-  - name: 📊 Estado del host
-    debug:
-      msg: >
-        {{ inventory_hostname }} →
-        Docker: {{ '✅' if docker_installed else '❌' }},
-        runc: {{ '✅' if runc_present else '❌' }},
-        AppArmor tuning: {{ 'APLICA ✅' if apparmor_applicable else 'OMITIDO 🚫' }}
-
-  # 🔹 6. Validar audit.log solo si aplica
-  - name: 🔍 Validar existencia de audit.log
-    stat:
-      path: "{{ audit_log_path }}"
-    register: audit_log
-    when: 
-          -apparmor_applicable
-          - collected_log.stat.exists
-          - collected_log.stat.size > 0
-
-
-  # 🔹 7. Crear carpeta solo si aplica
-  - name: 📁 Crear carpeta de trabajo
+  - name: 📁 Crear carpeta
     file:
       path: "{{ working_dir }}"
       state: directory
-      mode: '0755'
-    when: apparmor_applicable
+    when: apparmor_candidate
 
-  # 🔹 8. Extraer logs (resiliente)
-  - name: 🔍 Extraer eventos AppArmor (runc)
+  - name: 🔍 Extraer logs
     shell: |
       set +e
-      grep 'runc' {{ audit_log_path }} 2>/dev/null | \
+      grep 'runc' {{ audit_log }} 2>/dev/null | \
       grep -E 'DENIED|apparmor' > {{ working_dir }}/runc_raw.log
       exit 0
     args:
       executable: /bin/bash
-    when: apparmor_applicable and audit_log.stat.exists
+    when: apparmor_candidate
 
-  # 🔹 9. Validar si hubo datos
-  - name: 📊 Verificar si hay eventos recolectados
+  - name: 📊 Validar contenido
     stat:
       path: "{{ working_dir }}/runc_raw.log"
-    register: collected_log
-    when: apparmor_applicable
+    register: log_file
+    when: apparmor_candidate
 
-  # 🔹 10. Mensaje si no hay eventos
-  - name: 🟡 Sin eventos relevantes
-    debug:
-      msg: "Host {{ inventory_hostname }} sin eventos AppArmor relevantes"
-    when: apparmor_applicable and (collected_log.stat.size == 0)
+  - name: 🧠 Marcar host con datos
+    set_fact:
+      apparmor_active: "{{ apparmor_candidate and log_file.stat.exists and log_file.stat.size > 0 }}"
 
-  # 🔹 11. Comprimir solo si hay datos
-  - name: 📦 Comprimir evidencia
-    archive:
-      path: "{{ working_dir }}/"
-      dest: "{{ working_dir }}.tar.gz"
-    when: apparmor_applicable and (collected_log.stat.size > 0)
-
-  # 🔹 12. Descargar solo si hay datos
-  - name: 📥 Descargar evidencia al controlador
-    fetch:
-      src: "{{ working_dir }}.tar.gz"
-      dest: "./collected_logs/"
-      flat: yes
-    when: apparmor_applicable and (collected_log.stat.size > 0)
-
-  # 🔹 13. Hosts fuera de alcance
-  - name: 🚫 Host fuera de alcance AppArmor
-    debug:
-      msg: "Host {{ inventory_hostname }} omitido (sin Docker o sin runc)"
-    when: not apparmor_applicable
+  - name: 💾 Persistir estado por host
+    copy:
+      content: |
+        {
+          "hostname": "{{ inventory_hostname }}",
+          "candidate": {{ apparmor_candidate | lower }},
+          "active": {{ apparmor_active | default(false) | lower }}
+        }
+      dest: "{{ working_dir }}/state.json"
+    when: apparmor_candidate
+``
