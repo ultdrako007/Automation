@@ -1,0 +1,54 @@
+---
+- name: Bootstrap AppArmor profile para runc
+  hosts: all
+  become: yes
+
+  vars:
+    profile: /etc/apparmor.d/usr.bin.runc
+
+  tasks:
+
+  - name: 🔍 Verificar si runc existe
+    command: which runc
+    register: runc_check
+    failed_when: false
+    changed_when: false
+
+  - name: 🔍 Verificar profile
+    stat:
+      path: "{{ profile }}"
+    register: profile_stat
+
+  - name: 🧠 Determinar bootstrap
+    set_fact:
+      bootstrap_needed: "{{ runc_check.rc == 0 and not profile_stat.stat.exists }}"
+
+  - name: 📊 Estado bootstrap
+    debug:
+      msg: >
+        {{ inventory_hostname }} →
+        {{ 'CREAR PROFILE ✅' if bootstrap_needed else 'OMITIDO 🚫' }}
+
+  - name: 🛠️ Crear profile base (modo seguro)
+    copy:
+      dest: "{{ profile }}"
+      content: |
+        #include <tunables/global>
+
+        profile usr.bin.runc flags=(complain) {
+          #include <abstractions/base>
+
+          capability,
+          network,
+          file,
+          mount,
+        }
+    when: bootstrap_needed
+
+  - name: 🔄 Recargar AppArmor
+    command: apparmor_parser -r {{ profile }}
+    when: bootstrap_needed
+
+  - name: 🟡 Poner en complain mode
+    command: aa-complain usr.bin.runc
+    when: bootstrap_needed
