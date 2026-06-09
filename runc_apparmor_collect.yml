@@ -1,28 +1,106 @@
 ---
-- name: Recolección de logs AppArmor / auditd
+- name: Baseline inteligente AppArmor (detección + recolección segura)
   hosts: all
   become: yes
+  gather_facts: yes
+
+  vars:
+    working_dir: /tmp/apparmor_tuning
+    audit_log_path: /var/log/audit/audit.log
 
   tasks:
 
-  - name: Crear carpeta de trabajo
-    file:
-      path: /tmp/apparmor_tuning
-      state: directory
+  # 🔹 1. Validar Python interpreter warning (informativo)
+  - name: 📌 Mostrar versión de Python detectada
+    debug:
+      msg: "Python en {{ inventory_hostname }} → {{ ansible_python.version.full }}"
 
-  - name: Extraer eventos relevantes (runc)
+  # 🔹 2. Detectar Docker
+  - name: 🔍 Validar si Docker está instalado
+    command: docker --version
+    register: docker_check
+    failed_when: false
+    changed_when: false
+
+  # 🔹 3. Detectar runc (más preciso)
+  - name: 🔍 Validar si runc está presente
+    command: which runc
+    register: runc_check
+    failed_when: false
+    changed_when: false
+
+  # 🔹 4. Definir contexto del host
+  - name: 🧠 Definir estado del host
+    set_fact:
+      docker_installed: "{{ docker_check.rc == 0 }}"
+      runc_present: "{{ runc_check.rc == 0 }}"
+      apparmor_applicable: "{{ (docker_check.rc == 0) and (runc_check.rc == 0) }}"
+
+  # 🔹 5. Mostrar diagnóstico
+  - name: 📊 Estado del host
+    debug:
+      msg: >
+        {{ inventory_hostname }} →
+        Docker: {{ '✅' if docker_installed else '❌' }},
+        runc: {{ '✅' if runc_present else '❌' }},
+        AppArmor tuning: {{ 'APLICA ✅' if apparmor_applicable else 'OMITIDO 🚫' }}
+
+  # 🔹 6. Validar audit.log solo si aplica
+  - name: 🔍 Validar existencia de audit.log
+    stat:
+      path: "{{ audit_log_path }}"
+    register: audit_log
+    when: apparmor_applicable
+
+  # 🔹 7. Crear carpeta solo si aplica
+  - name: 📁 Crear carpeta de trabajo
+    file:
+      path: "{{ working_dir }}"
+      state: directory
+      mode: '0755'
+    when: apparmor_applicable
+
+  # 🔹 8. Extraer logs (resiliente)
+  - name: 🔍 Extraer eventos AppArmor (runc)
     shell: |
-      grep 'runc' /var/log/audit/audit.log | \
-      grep -E 'DENIED|apparmor' > /tmp/apparmor_tuning/runc_raw.log
+      set +e
+      grep 'runc' {{ audit_log_path }} 2>/dev/null | \
+      grep -E 'DENIED|apparmor' > {{ working_dir }}/runc_raw.log
+      exit 0
     args:
       executable: /bin/bash
+    when: apparmor_applicable and audit_log.stat.exists
 
-  - name: Comprimir evidencia
+  # 🔹 9. Validar si hubo datos
+  - name: 📊 Verificar si hay eventos recolectados
+    stat:
+      path: "{{ working_dir }}/runc_raw.log"
+    register: collected_log
+    when: apparmor_applicable
+
+  # 🔹 10. Mensaje si no hay eventos
+  - name: 🟡 Sin eventos relevantes
+    debug:
+      msg: "Host {{ inventory_hostname }} sin eventos AppArmor relevantes"
+    when: apparmor_applicable and (collected_log.stat.size == 0)
+
+  # 🔹 11. Comprimir solo si hay datos
+  - name: 📦 Comprimir evidencia
     archive:
-      path: /tmp/apparmor_tuning/
-      dest: /tmp/apparmor_tuning.tar.gz
+      path: "{{ working_dir }}/"
+      dest: "{{ working_dir }}.tar.gz"
+    when: apparmor_applicable and (collected_log.stat.size > 0)
 
-  - fetch:
-      src: /tmp/apparmor_tuning.tar.gz
-      dest: ./collected_logs/
+  # 🔹 12. Descargar solo si hay datos
+  - name: 📥 Descargar evidencia al controlador
+    fetch:
+      src: "{{ working_dir }}.tar.gz"
+      dest: "./collected_logs/"
       flat: yes
+    when: apparmor_applicable and (collected_log.stat.size > 0)
+
+  # 🔹 13. Hosts fuera de alcance
+  - name: 🚫 Host fuera de alcance AppArmor
+    debug:
+      msg: "Host {{ inventory_hostname }} omitido (sin Docker o sin runc)"
+    when: not apparmor_applicable
