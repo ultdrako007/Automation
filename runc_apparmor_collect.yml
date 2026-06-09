@@ -13,7 +13,12 @@
   # 🔹 1. Validar Python interpreter warning (informativo)
   - name: 📌 Mostrar versión de Python detectada
     debug:
-      msg: "Python en {{ inventory_hostname }} → {{ ansible_python.version.full }}"
+      msg: >
+        Python en {{ inventory_hostname }} →
+        {{ ansible_facts.python.version.major | default('?') }}.
+        {{ ansible_facts.python.version.minor | default('?') }}
+    failed_when: false
+
 
   # 🔹 2. Detectar Docker
   - name: 🔍 Validar si Docker está instalado
