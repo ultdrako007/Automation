@@ -1,5 +1,5 @@
 ---
-- name: Auditoría AppArmor runc (estado completo)
+- name: Auditoría AppArmor runc (VERSIÓN CORRECTA)
   hosts: all
   become: yes
 
@@ -8,9 +8,9 @@
 
   tasks:
 
-  ##########################################
+  ##################################################
   # 1. DETECTAR RUNC
-  ##########################################
+  ##################################################
 
   - name: Verificar runc
     command: which runc
@@ -18,54 +18,48 @@
     failed_when: false
     changed_when: false
 
-  - name: Determinar aplicabilidad
+  - name: Set runc flag
     set_fact:
       runc_present: "{{ runc_check.rc == 0 }}"
 
-  ##########################################
+  ##################################################
   # 2. VALIDAR PROFILE
-  ##########################################
+  ##################################################
 
   - name: Verificar profile
     stat:
       path: "{{ profile }}"
     register: profile_stat
 
-  ##########################################
-  # 3. VALIDAR ESTADO APPARMOR
-  ##########################################
+  ##################################################
+  # 3. OBTENER LISTA ENFORCE REAL
+  ##################################################
 
-  - name: Obtener estado AppArmor
-    command: aa-status
-    register: aa_status
-    changed_when: false
-    failed_when: false
-    when: runc_present
-
-  ##########################################
-  # 4. VALIDAR ENFORCE
-  ##########################################
-
-  - name: Verificar modo enforce
-    shell: aa-status | grep usr.bin.runc
-    register: runc_status
+  - name: Obtener perfiles en enforce
+    command: aa-status --json
+    register: aa_json
     failed_when: false
     changed_when: false
     when: runc_present
 
-  ##########################################
-  # 5. DETECTAR CONFLICTOS
-  ##########################################
+  - name: Parsear enforce real
+    set_fact:
+      enforce_active: "{{ 'usr.bin.runc' in (aa_json.stdout | default('')) }}"
+    when: runc_present
 
-  - name: Detectar backups conflictivos
+  ##################################################
+  # 4. DETECTAR CONFLICTOS
+  ##################################################
+
+  - name: Verificar backups activos
     shell: ls /etc/apparmor.d/usr.bin.runc.bak_* 2>/dev/null | wc -l
     register: backup_count
     changed_when: false
     failed_when: false
 
-  ##########################################
-  # 6. RESULTADO FINAL
-  ##########################################
+  ##################################################
+  # 5. RESULTADO FINAL
+  ##################################################
 
   - name: Reporte final
     debug:
@@ -73,15 +67,15 @@
         ===== HOST: {{ inventory_hostname }} =====
         runc instalado: {{ runc_present }}
         profile existe: {{ profile_stat.stat.exists }}
-        enforce activo: {{ 'ENFORCE ✅' if ('enforce' in (runc_status.stdout | default(''))) else 'NO ⚠️' }}
-        backups encontrados: {{ backup_count.stdout }}
+        enforce activo: {{ 'SI ✅' if enforce_active else 'NO ⚠️' }}
+        backups: {{ backup_count.stdout }}
 
-  ##########################################
-  # 7. RESUMEN GLOBAL
-  ##########################################
+  ##################################################
+  # 6. ESTADO GLOBAL
+  ##################################################
 
-  - name: Verificación rápida
+  - name: Estado consolidado
     debug:
       msg: >
         {{ inventory_hostname }} →
-        {{ 'OK ✅' if (runc_present and profile_stat.stat.exists and 'enforce' in (runc_status.stdout | default(''))) else 'REVISAR ⚠️' }}
+        {{ 'OK ✅' if (runc_present and profile_stat.stat.exists and enforce_active) else 'REVISAR ⚠️' }}
