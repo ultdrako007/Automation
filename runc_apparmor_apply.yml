@@ -1,5 +1,5 @@
 ---
-- name: Apply AppArmor (pipeline final consolidado)
+- name: Apply AppArmor (final producción sin errores)
   hosts: all
   become: yes
 
@@ -10,51 +10,51 @@
 
   tasks:
 
-  ##########################################
+  ##################################################
   # 1. CARGA DE ESTADO
-  ##########################################
+  ##################################################
 
-  - name: 🔍 Verificar state.json
+  - name: Verificar state.json
     stat:
       path: "{{ working_dir }}/state.json"
     register: state_stat
 
-  - name: 📥 Leer estado
+  - name: Leer estado
     slurp:
       src: "{{ working_dir }}/state.json"
     register: state_file
     when: state_stat.stat.exists
 
-  - name: 🧠 Parsear estado
+  - name: Parsear estado
     set_fact:
       state: "{{ state_file.content | b64decode | from_json }}"
     when: state_stat.stat.exists
 
-  - name: 🧠 Estado por defecto
+  - name: Estado por defecto
     set_fact:
       state:
         active: false
     when: not state_stat.stat.exists
 
-  ##########################################
-  # 2. VALIDACIONES
-  ##########################################
+  ##################################################
+  # 2. VALIDACIONES INICIALES
+  ##################################################
 
-  - name: 🔍 Verificar profile AppArmor
+  - name: Verificar profile
     stat:
       path: "{{ profile }}"
     register: profile_stat
 
-  - name: 🔍 Verificar reglas optimizadas
+  - name: Verificar reglas
     stat:
       path: "{{ working_dir }}/rules_optimized.txt"
     register: rules_stat
 
-  ##########################################
+  ##################################################
   # 3. CONDICIÓN DE EJECUCIÓN
-  ##########################################
+  ##################################################
 
-  - name: 🧠 Evaluar si aplicar
+  - name: Evaluar si aplica
     set_fact:
       apply_ready: >
         {{ state.active
@@ -62,37 +62,33 @@
            and rules_stat.stat.exists
            and rules_stat.stat.size > 0 }}
 
-  - name: 📊 Estado del host
+  - name: Mostrar estado
     debug:
       msg: >
         {{ inventory_hostname }} →
-        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }} |
-        profile={{ profile_stat.stat.exists }},
-        rules={{ rules_stat.stat.exists }},
-        size={{ rules_stat.stat.size | default('0') }}
+        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }}
 
-  ##########################################
+  ##################################################
   # 4. LEER REGLAS REMOTAS
-  ##########################################
+  ##################################################
 
-  - name: 📥 Leer reglas remotas
+  - name: Leer reglas optimizadas (remoto)
     slurp:
       src: "{{ working_dir }}/rules_optimized.txt"
     register: raw_rules
     when: apply_ready
 
-  ##########################################
-  # 5. LIMPIEZA ROBUSTA (CRÍTICO)
-  ##########################################
+  ##################################################
+  # 5. LIMPIEZA ROBUSTA (CRÍTICO REAL)
+  ##################################################
 
-  - name: 🧹 Limpiar reglas inválidas
+  - name: Generar reglas limpias válidas
     copy:
       dest: "{{ cleaned_rules }}"
       content: |
         {% set content = raw_rules.content | b64decode %}
         {% for line in content.splitlines() %}
         {% if line.startswith('/') %}
-
         {% if not (
           line.startswith('/proc') or
           line.startswith('/sys') or
@@ -100,15 +96,99 @@
           line.startswith('/snap') or
           '/overlay2/' in line
         ) %}
-
         {% if ' r,' in line or ' rw,' in line %}
-
         {{ line }}
-
         {% endif %}
         {% endif %}
         {% endif %}
         {% endfor %}
     when: apply_ready
 
-  ##########################################
+  ##################################################
+  # 6. VALIDACIÓN DE REGLAS LIMPIAS
+  ##################################################
+
+  - name: Verificar reglas limpias
+    stat:
+      path: "{{ cleaned_rules }}"
+    register: cleaned_stat
+    when: apply_ready
+
+  - name: Ajustar ejecución final
+    set_fact:
+      apply_ready: "{{ apply_ready and cleaned_stat.stat.size > 0 }}"
+    when: apply_ready
+
+  ##################################################
+  # 7. BACKUP SEGURO
+  ##################################################
+
+  - name: Backup profile
+    copy:
+      src: "{{ profile }}"
+      dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
+      remote_src: yes
+    when: apply_ready
+
+  ##################################################
+  # 8. LEER REGLAS FINAL CORRECTAMENTE
+  ##################################################
+
+  - name: Leer reglas limpias (remoto)
+    slurp:
+      src: "{{ cleaned_rules }}"
+    register: rules_content
+    when: apply_ready
+
+  ##################################################
+  # 9. INSERCIÓN CORRECTA (CLAVE)
+  ##################################################
+
+  - name: Insertar reglas dentro del profile
+    blockinfile:
+      path: "{{ profile }}"
+      marker: "# ANSIBLE MANAGED RUNC RULES"
+      block: |
+        # Reglas dinámicas validadas
+
+        #include <abstractions/base>
+
+        {{ rules_content.content | b64decode }}
+
+        capability,
+        network,
+        file,
+        mount,
+    when: apply_ready
+
+  ##################################################
+  # 10. VALIDACIÓN SINTAXIS REAL
+  ##################################################
+
+  - name: Validar sintaxis AppArmor
+    command: apparmor_parser -Q {{ profile }}
+    register: syntax_check
+    failed_when: false
+    changed_when: false
+    when: apply_ready
+
+  ##################################################
+  # 11. STOP SI ES INVÁLIDO
+  ##################################################
+
+  - name: Detener si sintaxis inválida
+    fail:
+      msg: "AppArmor inválido. Ejecutar rollback."
+    when: apply_ready and syntax_check.rc != 0
+
+  ##################################################
+  # 12. APPLY FINAL SEGURO
+  ##################################################
+
+  - name: Recargar AppArmor
+    command: apparmor_parser -r {{ profile }}
+    when: apply_ready and syntax_check.rc == 0
+
+  - name: Activar enforce
+    command: aa-enforce usr.bin.runc
+    when: apply_ready and syntax_check.rc == 0
