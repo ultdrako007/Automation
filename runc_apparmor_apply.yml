@@ -1,91 +1,102 @@
 ---
-- name: Deploy baseline AppArmor profile estable (runc)
+- name: Apply AppArmor baseline (fix conflictos)
   hosts: all
   become: yes
 
   vars:
     profile: /etc/apparmor.d/usr.bin.runc
-
-    baseline_profile: |
-      #include <tunables/global>
-
-      profile usr.bin.runc flags=(attach_disconnected,mediate_deleted) {
-
-        #include <abstractions/base>
-
-        # CAPABILITIES
-        capability,
-        network,
-        file,
-        mount,
-
-        # LIBS
-        /lib/** r,
-        /usr/lib/** r,
-        /etc/ld.so.cache r,
-
-        # CONTAINER RUNTIME
-        /run/containerd/** rw,
-        /var/lib/containerd/** rw,
-        /var/lib/docker/** rw,
-        /opt/containerd/** r,
-
-        # DEVICES
-        /dev/** rw,
-
-        # SAFE PROC/SYS ACCESS
-        /proc/** r,
-        /sys/** r,
-
-        # TEMP FILES
-        /tmp/** rw,
-        /var/tmp/** rw,
-
-        # DOCKER SOCKET
-        /var/run/docker.sock rw,
-
-        # LOGGING
-        /var/log/** r,
-      }
+    backup_dir: /etc/apparmor.d/backup
 
   tasks:
 
+  ##########################################
   # 1. Detectar runc
+  ##########################################
+
   - name: Verificar runc
     command: which runc
     register: runc_check
     failed_when: false
     changed_when: false
 
-  # 2. Determinar aplicabilidad
-  - name: Validar host
+  - name: Determinar aplicabilidad
     set_fact:
       apply_profile: "{{ runc_check.rc == 0 }}"
 
-  - name: Estado
-    debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'APLICAR BASELINE ✅' if apply_profile else 'OMITIDO 🚫' }}
+  ##########################################
+  # 2. Preparar backup seguro
+  ##########################################
 
-  # 3. Backup
-  - name: Backup profile existente
+  - name: Crear directorio de backup
+    file:
+      path: "{{ backup_dir }}"
+      state: directory
+    when: apply_profile
+
+  - name: Mover backups antiguos
+    shell: |
+      mv /etc/apparmor.d/usr.bin.runc.bak_* {{ backup_dir }}/ 2>/dev/null || true
+    when: apply_profile
+
+  ##########################################
+  # 3. Backup correcto (FUERA del path activo)
+  ##########################################
+
+  - name: Backup profile
     copy:
       src: "{{ profile }}"
-      dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
+      dest: "{{ backup_dir }}/usr.bin.runc.bak_{{ ansible_date_time.iso8601 }}"
       remote_src: yes
-    ignore_errors: yes
     when: apply_profile
+    ignore_errors: yes
 
+  ##########################################
   # 4. Deploy baseline limpio
-  - name: Crear profile limpio
+  ##########################################
+
+  - name: Deploy profile baseline
     copy:
       dest: "{{ profile }}"
-      content: "{{ baseline_profile }}"
+      content: |
+        #include <tunables/global>
+
+        profile usr.bin.runc flags=(attach_disconnected,mediate_deleted) {
+
+          #include <abstractions/base>
+
+          capability,
+          network,
+          file,
+          mount,
+
+          /lib/** r,
+          /usr/lib/** r,
+          /etc/ld.so.cache r,
+
+          /run/containerd/** rw,
+          /var/lib/containerd/** rw,
+          /var/lib/docker/** rw,
+          /opt/containerd/** r,
+
+          /dev/** rw,
+
+          /proc/** r,
+          /sys/** r,
+
+          /tmp/** rw,
+          /var/tmp/** rw,
+
+          /var/run/docker.sock rw,
+
+          /var/log/** r,
+        }
     when: apply_profile
 
-  # 5. Validar sintaxis
-  - name: Validar AppArmor
+  ##########################################
+  # 5. Validación
+  ##########################################
+
+  - name: Validar sintaxis
     command: apparmor_parser -Q {{ profile }}
     register: syntax
     failed_when: false
@@ -94,14 +105,17 @@
 
   - name: Fallar si inválido
     fail:
-      msg: "Baseline inválido (no debería pasar)"
+      msg: "Profile inválido"
     when: apply_profile and syntax.rc != 0
 
-  # 6. Aplicar
+  ##########################################
+  # 6. Reload limpio (CLAVE)
+  ##########################################
+
   - name: Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
     when: apply_profile
 
-  - name: Enforce
+  - name: Activar enforce
     command: aa-enforce usr.bin.runc
     when: apply_profile
