@@ -1,0 +1,35 @@
+---
+- name: Aplicar profile ajustado (CONTROLADO)
+  hosts: all
+  become: yes
+
+  vars:
+    profile_path: /etc/apparmor.d/usr.bin.runc
+
+  tasks:
+
+  - name: Backup profile actual
+    copy:
+      src: "{{ profile_path }}"
+      dest: "{{ profile_path }}.bak_{{ ansible_date_time.iso8601 }}"
+      remote_src: yes
+
+  - name: Insertar nuevas reglas
+    blockinfile:
+      path: "{{ profile_path }}"
+      marker: "# {mark} ANSIBLE MANAGED RUNC RULES"
+      block: |
+        /usr/lib/** r,
+        /lib/** r,
+        /etc/ld.so.cache r,
+        /opt/containerd/** r,
+        /run/containerd/** r,
+
+  - name: Recargar AppArmor
+    command: apparmor_parser -r {{ profile_path }}
+
+  - name: Cambiar a modo enforce
+    command: aa-enforce usr.bin.runc
+
+  - name: Validar Docker
+    command: docker ps
