@@ -1,63 +1,42 @@
 ---
-- name: Recolección de logs AppArmor / auditd (baseline inteligente)
-  hosts: linux_servers
+- name: Analyze inteligente AppArmor basado en logs reales
+  hosts: all
   become: yes
   gather_facts: yes
 
+  vars:
+    working_dir: /tmp/apparmor_tuning
+
   tasks:
 
-  # 🔹 1. Detectar si Docker existe
-  - name: 🔍 Validar si Docker está instalado
-    command: docker --version
-    register: docker_check
-    failed_when: false
-    changed_when: false
+  - name: 🔍 Verificar si existe log recolectado
+    stat:
+      path: "{{ working_dir }}/runc_raw.log"
+    register: log_file
 
-  # 🔹 2. Definir variable lógica
-  - name: 🧠 Definir si el host usa Docker
+  - name: 🧠 Determinar si el host tiene datos para analizar
     set_fact:
-      docker_installed: "{{ docker_check.rc == 0 }}"
+      analyze_applicable: "{{ log_file.stat.exists and log_file.stat.size > 0 }}"
 
-  # 🔹 3. Mostrar estado
-  - name: 📊 Estado Docker
+  - name: 📊 Estado Analyze
     debug:
       msg: >
         {{ inventory_hostname }} →
-        {{ 'Docker detectado ✅' if docker_installed else 'Sin Docker ❌' }}
+        {{ 'ANALIZAR ✅' if analyze_applicable else 'SIN DATOS 🚫' }}
 
-  # 🔹 4. Crear carpeta SOLO si Docker
-  - name: Crear carpeta de trabajo
-    file:
-      path: /tmp/apparmor_tuning
-      state: directory
-    when: docker_installed
-
-  # 🔹 5. Extraer logs SOLO si Docker
-  - name: Extraer eventos relevantes (runc)
+  - name: 🔍 Extraer paths únicos
     shell: |
-      grep 'runc' /var/log/audit/audit.log 2>/dev/null | \
-      grep -E 'DENIED|apparmor' > /tmp/apparmor_tuning/runc_raw.log || true
+      cat {{ working_dir }}/runc_raw.log | \
+      grep 'name=' | \
+      awk -F 'name=' '{print $2}' | \
+      awk '{print $1}' | tr -d '"' | \
+      sort | uniq > {{ working_dir }}/runc_paths.txt
     args:
       executable: /bin/bash
-    when: docker_installed
+    when: analyze_applicable
 
-  # 🔹 6. Comprimir SOLO si Docker
-  - name: Comprimir evidencia
-    archive:
-      path: /tmp/apparmor_tuning/
-      dest: /tmp/apparmor_tuning.tar.gz
-    when: docker_installed
-
-  # 🔹 7. Descargar SOLO si Docker
-  - name: Descargar evidencia
-    fetch:
-      src: /tmp/apparmor_tuning.tar.gz
-      dest: ./collected_logs/
-      flat: yes
-    when: docker_installed
-
-  # 🔹 8. Mensaje si no aplica
-  - name: 🚫 Host sin Docker (omitido)
+  - name: 🚫 Host sin datos
     debug:
-      msg: "Host {{ inventory_hostname }} no usa Docker, se omite tuning AppArmor"
-    when: not docker_installed
+      msg: "Sin eventos AppArmor, se omite análisis"
+    when: not analyze_applicable
+``
