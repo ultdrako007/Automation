@@ -62,4 +62,3 @@
         }
       dest: "{{ working_dir }}/state.json"
     when: apparmor_candidate
-``
