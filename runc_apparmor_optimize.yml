@@ -1,5 +1,5 @@
 ---
-- name: Optimización inteligente de reglas AppArmor
+- name: Optimize inteligente AppArmor
   hosts: all
   become: yes
 
@@ -8,42 +8,25 @@
 
   tasks:
 
-  - name: 🔍 Validar paths generados
+  - name: 🔍 Validar paths
     stat:
       path: "{{ working_dir }}/runc_paths.txt"
     register: paths_file
 
-  - name: 🧠 Determinar si aplica optimización
+  - name: 🧠 Determinar optimización
     set_fact:
-      optimize_applicable: "{{ paths_file.stat.exists and paths_file.stat.size > 0 }}"
+      apparmor_active: "{{ paths_file.stat.exists and paths_file.stat.size > 0 }}"
 
-  - name: 📊 Estado Optimize
+  - name: 📊 Estado
     debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'OPTIMIZAR ✅' if optimize_applicable else 'SIN PATHS 🚫' }}
+      msg: "{{ inventory_hostname }} → {{ 'OPTIMIZAR ✅' if apparmor_active else 'OMITIDO 🚫' }}"
 
-  - name: ⚙️ Optimizar paths
+  - name: ⚙️ Optimizar reglas
     shell: |
       cat {{ working_dir }}/runc_paths.txt | \
       sed 's|/usr/lib/.*|/usr/lib/**|' | \
       sed 's|/lib/.*|/lib/**|' | \
       sed 's|/opt/containerd/.*|/opt/containerd/**|' | \
       sed 's|/run/containerd/.*|/run/containerd/**|' | \
-      sort | uniq > {{ working_dir }}/runc_paths_optimized.txt
-    args:
-      executable: /bin/bash
-    when: optimize_applicable
-
-  - name: 🧾 Generar reglas finales
-    shell: |
-      echo "# Optimized AppArmor rules" > {{ working_dir }}/runc_rules_final.txt
-      while read path; do
-        echo "$path r," >> {{ working_dir }}/runc_rules_final.txt
-      done < {{ working_dir }}/runc_paths_optimized.txt
-    when: optimize_applicable
-
-  - name: 🚫 Host sin optimización
-    debug:
-      msg: "No hay reglas que optimizar"
-    when: not optimize_applicable
+      sort | uniq > {{ working_dir }}/rules_optimized.txt
+    when: apparmor_active
