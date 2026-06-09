@@ -85,4 +85,3 @@
       msg: >
         {{ inventory_hostname }} →
         {{ 'OK ✅' if (runc_present and profile_stat.stat.exists and 'enforce' in (runc_status.stdout | default(''))) else 'REVISAR ⚠️' }}
-``
