@@ -1,5 +1,5 @@
 ---
-- name: Auditoría AppArmor runc (final robusto)
+- name: Auditoría AppArmor runc (mejorado)
   hosts: all
   become: yes
 
@@ -35,43 +35,49 @@
   # 3. ESTADO APPARMOR
   ##################################################
 
-  - name: Obtener estado AppArmor (json)
+  - name: Obtener estado AppArmor
     command: aa-status --json
     register: aa_json
     failed_when: false
     changed_when: false
     when: runc_present
 
-  ##################################################
-  # 4. DEFAULT (CLAVE)
-  ##################################################
-
-  - name: Definir enforce_active por defecto
+  - name: Default enforce
     set_fact:
       enforce_active: false
-
-  ##################################################
-  # 5. PARSEAR SOLO SI APLICA
-  ##################################################
 
   - name: Detectar enforce real
     set_fact:
       enforce_active: "{{ 'usr.bin.runc' in (aa_json.stdout | default('')) }}"
-    when: runc_present and aa_json.stdout is defined
-    failed_when: false
+    when: runc_present
 
   ##################################################
-  # 6. VALIDAR BACKUPS
+  # 4. BACKUPS
   ##################################################
 
-  - name: Verificar backups conflictivos
+  - name: Verificar backups
     shell: ls /etc/apparmor.d/usr.bin.runc.bak_* 2>/dev/null | wc -l
     register: backup_count
     changed_when: false
     failed_when: false
 
   ##################################################
-  # 7. REPORTE DETALLADO
+  # 5. MENSAJE INTELIGENTE
+  ##################################################
+
+  - name: Determinar estado final
+    set_fact:
+      final_status: >
+        {% if not runc_present %}
+        HOST SIN DOCKER 🚫
+        {% elif profile_stat.stat.exists and enforce_active %}
+        OK ✅
+        {% else %}
+        REVISAR ⚠️
+        {% endif %}
+
+  ##################################################
+  # 6. REPORTE DETALLADO
   ##################################################
 
   - name: Reporte final
@@ -80,15 +86,14 @@
         ===== HOST: {{ inventory_hostname }} =====
         runc instalado: {{ runc_present }}
         profile existe: {{ profile_stat.stat.exists }}
-        enforce activo: {{ 'SI ✅' if enforce_active else 'NO ⚠️' }}
+        enforce activo: {{ 'SI ✅' if enforce_active else 'NO ⚠️' if runc_present else 'N/A' }}
         backups: {{ backup_count.stdout }}
+        estado: {{ final_status }}
 
   ##################################################
-  # 8. ESTADO CONSOLIDADO
+  # 7. RESUMEN SIMPLE
   ##################################################
 
-  - name: Estado global
+  - name: Estado consolidado
     debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'OK ✅' if (runc_present and profile_stat.stat.exists and enforce_active) else 'N/A o Revisar ⚠️' }}
+      msg: "{{ inventory_hostname }} → {{ final_status }}"
