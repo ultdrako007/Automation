@@ -1,54 +1,56 @@
 ---
-- name: Apply inteligente AppArmor (versión final sin errores)
+- name: Apply AppArmor (seguro + sintaxis correcta)
   hosts: all
   become: yes
 
   vars:
     working_dir: /tmp/apparmor_tuning
     profile: /etc/apparmor.d/usr.bin.runc
+    temp_rules: /tmp/apparmor_tuning/rules.cleaned.txt
 
   tasks:
 
-  # 🔹 1. Verificar state.json
+  # -------------------------
+  # 1. VALIDACIONES
+  # -------------------------
+
   - name: 🔍 Verificar state.json
     stat:
       path: "{{ working_dir }}/state.json"
     register: state_stat
 
-  # 🔹 2. Leer estado solo si existe
   - name: 📥 Leer estado
     slurp:
       src: "{{ working_dir }}/state.json"
     register: state_file
     when: state_stat.stat.exists
 
-  # 🔹 3. Parsear estado
   - name: 🧠 Parsear estado
     set_fact:
       state: "{{ state_file.content | b64decode | from_json }}"
     when: state_stat.stat.exists
 
-  # 🔹 4. Default seguro
-  - name: 🧠 Estado por defecto
+  - name: 🧠 Default
     set_fact:
       state:
         active: false
     when: not state_stat.stat.exists
 
-  # 🔹 5. Verificar profile AppArmor
-  - name: 🔍 Verificar profile runc
+  - name: 🔍 Verificar profile
     stat:
       path: "{{ profile }}"
     register: profile_stat
 
-  # 🔹 6. Verificar reglas generadas
-  - name: 🔍 Verificar reglas optimizadas
+  - name: 🔍 Verificar reglas
     stat:
       path: "{{ working_dir }}/rules_optimized.txt"
     register: rules_stat
 
-  # 🔹 7. Determinar si el host está listo
-  - name: 🧠 Evaluar condición final
+  # -------------------------
+  # 2. CONDICIÓN FINAL
+  # -------------------------
+
+  - name: 🧠 Evaluar ejecución
     set_fact:
       apply_ready: >
         {{ state.active
@@ -56,24 +58,37 @@
            and rules_stat.stat.exists
            and rules_stat.stat.size > 0 }}
 
-  # 🔹 8. Mostrar estado completo (debug clave)
-  - name: 📊 Estado Apply detallado
+  - name: 📊 Estado final
     debug:
       msg: >
         {{ inventory_hostname }} →
-        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }} |
-        profile={{ profile_stat.stat.exists }},
-        rules={{ rules_stat.stat.exists }},
-        size={{ rules_stat.stat.size | default('0') }}
+        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }}
 
-  # 🔹 9. Leer reglas desde el HOST REMOTO (FIX CRÍTICO)
-  - name: 📥 Leer reglas optimizadas (REMOTO)
+  # -------------------------
+  # 3. LIMPIEZA DE REGLAS (CRÍTICO)
+  # -------------------------
+
+  - name: 📥 Leer reglas crudas
     slurp:
       src: "{{ working_dir }}/rules_optimized.txt"
     register: rules_content
     when: apply_ready
 
-  # 🔹 10. Backup del profile
+  - name: 🧹 Limpiar reglas inválidas
+    copy:
+      dest: "{{ temp_rules }}"
+      content: |
+        {% for line in (rules_content.content | b64decode).splitlines() %}
+        {% if line.startswith('/') and ' ' in line %}
+        {{ line }}
+        {% endif %}
+        {% endfor %}
+    when: apply_ready
+
+  # -------------------------
+  # 4. BACKUP
+  # -------------------------
+
   - name: 💾 Backup profile
     copy:
       src: "{{ profile }}"
@@ -81,20 +96,43 @@
       remote_src: yes
     when: apply_ready
 
-  # 🔹 11. Aplicar reglas correctamente
-  - name: 🔧 Insertar reglas en profile
+  # -------------------------
+  # 5. INSERCIÓN SEGURA
+  # -------------------------
+
+  - name: 🔧 Insertar reglas dentro del profile
     blockinfile:
       path: "{{ profile }}"
-      marker: "# ANSIBLE MANAGED RUNC"
-      block: "{{ rules_content.content | b64decode }}"
+      marker: "# ANSIBLE MANAGED RUNC RULES"
+      block: |
+        # Reglas generadas dinámicamente
+        {{ lookup('file', temp_rules) }}
     when: apply_ready
 
-  # 🔹 12. Recargar AppArmor
+  # -------------------------
+  # 6. VALIDACIÓN PREVIA (MUY IMPORTANTE)
+  # -------------------------
+
+  - name: 🧪 Validar sintaxis antes de aplicar
+    command: apparmor_parser -Q {{ profile }}
+    register: syntax_check
+    failed_when: false
+    changed_when: false
+    when: apply_ready
+
+  - name: ⚠️ Detener si la sintaxis es inválida
+    fail:
+      msg: "Error de sintaxis en profile AppArmor, rollback recomendado"
+    when: apply_ready and syntax_check.rc != 0
+
+  # -------------------------
+  # 7. APLICAR SOLO SI VALIDA
+  # -------------------------
+
   - name: 🔄 Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
-    when: apply_ready
+    when: apply_ready and syntax_check.rc == 0
 
-  # 🔹 13. Enforce (activar protección real)
   - name: 🔒 Activar enforce
     command: aa-enforce usr.bin.runc
-    when: apply_ready
+    when: apply_ready and syntax_check.rc == 0
