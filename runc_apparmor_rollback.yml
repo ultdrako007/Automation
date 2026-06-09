@@ -1,43 +1,34 @@
 ---
-- name: Rollback seguro de AppArmor
+- name: Rollback inteligente AppArmor
   hosts: all
   become: yes
 
   vars:
-    profile_path: /etc/apparmor.d/usr.bin.runc
+    profile: /etc/apparmor.d/usr.bin.runc
 
   tasks:
 
-  - name: 🔍 Buscar backup disponible
-    shell: |
-      ls -t {{ profile_path }}.bak_* 2>/dev/null | head -1
-    register: backup_file
-    changed_when: false
+  - name: 🔍 Buscar backup
+    shell: ls -t {{ profile }}.bak_* | head -1
+    register: backup
     failed_when: false
 
-  - name: 🧠 Determinar si hay rollback
+  - name: 🧠 Validar rollback
     set_fact:
-      rollback_applicable: "{{ backup_file.stdout != '' }}"
+      rollback: "{{ backup.stdout != '' }}"
 
-  - name: 📊 Estado Rollback
+  - name: 📊 Estado
     debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'ROLLBACK ✅' if rollback_applicable else 'SIN BACKUP 🚫' }}
+      msg: "{{ inventory_hostname }} → {{ 'ROLLBACK ✅' if rollback else 'SIN BACKUP 🚫' }}"
 
-  - name: 🔄 Restaurar backup
-    command: cp {{ backup_file.stdout }} {{ profile_path }}
-    when: rollback_applicable
+  - name: 🔄 Restaurar
+    command: cp {{ backup.stdout }} {{ profile }}
+    when: rollback
 
-  - name: 🔄 Recargar AppArmor
-    command: apparmor_parser -r {{ profile_path }}
-    when: rollback_applicable
+  - name: 🔄 Recargar
+    command: apparmor_parser -r {{ profile }}
+    when: rollback
 
-  - name: 🟡 Volver a complain (modo seguro)
+  - name: 🟡 Complain
     command: aa-complain usr.bin.runc
-    when: rollback_applicable
-
-  - name: 🚫 Sin rollback
-    debug:
-      msg: "No existe backup para restaurar"
-    when: not rollback_applicable
+    when: rollback
