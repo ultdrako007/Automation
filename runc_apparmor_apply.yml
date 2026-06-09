@@ -1,5 +1,5 @@
 ---
-- name: Apply inteligente AppArmor (robusto)
+- name: Apply inteligente AppArmor (versión final sin errores)
   hosts: all
   become: yes
 
@@ -9,43 +9,46 @@
 
   tasks:
 
-  # 🔹 1. Validar state
+  # 🔹 1. Verificar state.json
   - name: 🔍 Verificar state.json
     stat:
       path: "{{ working_dir }}/state.json"
     register: state_stat
 
+  # 🔹 2. Leer estado solo si existe
   - name: 📥 Leer estado
     slurp:
       src: "{{ working_dir }}/state.json"
     register: state_file
     when: state_stat.stat.exists
 
+  # 🔹 3. Parsear estado
   - name: 🧠 Parsear estado
     set_fact:
       state: "{{ state_file.content | b64decode | from_json }}"
     when: state_stat.stat.exists
 
-  - name: 🧠 Default
+  # 🔹 4. Default seguro
+  - name: 🧠 Estado por defecto
     set_fact:
       state:
         active: false
     when: not state_stat.stat.exists
 
-  # 🔹 2. Validar profile AppArmor
+  # 🔹 5. Verificar profile AppArmor
   - name: 🔍 Verificar profile runc
     stat:
       path: "{{ profile }}"
     register: profile_stat
 
-  # 🔹 3. Validar reglas generadas
+  # 🔹 6. Verificar reglas generadas
   - name: 🔍 Verificar reglas optimizadas
     stat:
       path: "{{ working_dir }}/rules_optimized.txt"
     register: rules_stat
 
-  # 🔹 4. Determinar si aplicar
-  - name: 🧠 Evaluar aplicación real
+  # 🔹 7. Determinar si el host está listo
+  - name: 🧠 Evaluar condición final
     set_fact:
       apply_ready: >
         {{ state.active
@@ -53,7 +56,7 @@
            and rules_stat.stat.exists
            and rules_stat.stat.size > 0 }}
 
-  # 🔹 5. Mostrar estado completo
+  # 🔹 8. Mostrar estado completo (debug clave)
   - name: 📊 Estado Apply detallado
     debug:
       msg: >
@@ -63,7 +66,14 @@
         rules={{ rules_stat.stat.exists }},
         size={{ rules_stat.stat.size | default('0') }}
 
-  # 🔹 6. Backup (solo si aplica)
+  # 🔹 9. Leer reglas desde el HOST REMOTO (FIX CRÍTICO)
+  - name: 📥 Leer reglas optimizadas (REMOTO)
+    slurp:
+      src: "{{ working_dir }}/rules_optimized.txt"
+    register: rules_content
+    when: apply_ready
+
+  # 🔹 10. Backup del profile
   - name: 💾 Backup profile
     copy:
       src: "{{ profile }}"
@@ -71,20 +81,20 @@
       remote_src: yes
     when: apply_ready
 
-  # 🔹 7. Insertar reglas
-  - name: 🔧 Aplicar reglas
+  # 🔹 11. Aplicar reglas correctamente
+  - name: 🔧 Insertar reglas en profile
     blockinfile:
       path: "{{ profile }}"
       marker: "# ANSIBLE MANAGED RUNC"
-      block: "{{ lookup('file', working_dir + '/rules_optimized.txt') }}"
+      block: "{{ rules_content.content | b64decode }}"
     when: apply_ready
 
-  # 🔹 8. Recargar
+  # 🔹 12. Recargar AppArmor
   - name: 🔄 Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
     when: apply_ready
 
-  # 🔹 9. Enforce
+  # 🔹 13. Enforce (activar protección real)
   - name: 🔒 Activar enforce
     command: aa-enforce usr.bin.runc
     when: apply_ready
