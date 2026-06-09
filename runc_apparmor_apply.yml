@@ -1,194 +1,107 @@
 ---
-- name: Apply AppArmor (final producción sin errores)
+- name: Deploy baseline AppArmor profile estable (runc)
   hosts: all
   become: yes
 
   vars:
-    working_dir: /tmp/apparmor_tuning
     profile: /etc/apparmor.d/usr.bin.runc
-    cleaned_rules: /tmp/apparmor_tuning/rules.cleaned.txt
 
-  tasks:
+    baseline_profile: |
+      #include <tunables/global>
 
-  ##################################################
-  # 1. CARGA DE ESTADO
-  ##################################################
-
-  - name: Verificar state.json
-    stat:
-      path: "{{ working_dir }}/state.json"
-    register: state_stat
-
-  - name: Leer estado
-    slurp:
-      src: "{{ working_dir }}/state.json"
-    register: state_file
-    when: state_stat.stat.exists
-
-  - name: Parsear estado
-    set_fact:
-      state: "{{ state_file.content | b64decode | from_json }}"
-    when: state_stat.stat.exists
-
-  - name: Estado por defecto
-    set_fact:
-      state:
-        active: false
-    when: not state_stat.stat.exists
-
-  ##################################################
-  # 2. VALIDACIONES INICIALES
-  ##################################################
-
-  - name: Verificar profile
-    stat:
-      path: "{{ profile }}"
-    register: profile_stat
-
-  - name: Verificar reglas
-    stat:
-      path: "{{ working_dir }}/rules_optimized.txt"
-    register: rules_stat
-
-  ##################################################
-  # 3. CONDICIÓN DE EJECUCIÓN
-  ##################################################
-
-  - name: Evaluar si aplica
-    set_fact:
-      apply_ready: >
-        {{ state.active
-           and profile_stat.stat.exists
-           and rules_stat.stat.exists
-           and rules_stat.stat.size > 0 }}
-
-  - name: Mostrar estado
-    debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }}
-
-  ##################################################
-  # 4. LEER REGLAS REMOTAS
-  ##################################################
-
-  - name: Leer reglas optimizadas (remoto)
-    slurp:
-      src: "{{ working_dir }}/rules_optimized.txt"
-    register: raw_rules
-    when: apply_ready
-
-  ##################################################
-  # 5. LIMPIEZA ROBUSTA (CRÍTICO REAL)
-  ##################################################
-
-  - name: Generar reglas limpias válidas
-    copy:
-      dest: "{{ cleaned_rules }}"
-      content: |
-        {% set content = raw_rules.content | b64decode %}
-        {% for line in content.splitlines() %}
-        {% if line.startswith('/') %}
-        {% if not (
-          line.startswith('/proc') or
-          line.startswith('/sys') or
-          line.startswith('/run/user') or
-          line.startswith('/snap') or
-          '/overlay2/' in line
-        ) %}
-        {% if ' r,' in line or ' rw,' in line %}
-        {{ line }}
-        {% endif %}
-        {% endif %}
-        {% endif %}
-        {% endfor %}
-    when: apply_ready
-
-  ##################################################
-  # 6. VALIDACIÓN DE REGLAS LIMPIAS
-  ##################################################
-
-  - name: Verificar reglas limpias
-    stat:
-      path: "{{ cleaned_rules }}"
-    register: cleaned_stat
-    when: apply_ready
-
-  - name: Ajustar ejecución final
-    set_fact:
-      apply_ready: "{{ apply_ready and cleaned_stat.stat.size > 0 }}"
-    when: apply_ready
-
-  ##################################################
-  # 7. BACKUP SEGURO
-  ##################################################
-
-  - name: Backup profile
-    copy:
-      src: "{{ profile }}"
-      dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
-      remote_src: yes
-    when: apply_ready
-
-  ##################################################
-  # 8. LEER REGLAS FINAL CORRECTAMENTE
-  ##################################################
-
-  - name: Leer reglas limpias (remoto)
-    slurp:
-      src: "{{ cleaned_rules }}"
-    register: rules_content
-    when: apply_ready
-
-  ##################################################
-  # 9. INSERCIÓN CORRECTA (CLAVE)
-  ##################################################
-
-  - name: Insertar reglas dentro del profile
-    blockinfile:
-      path: "{{ profile }}"
-      marker: "# ANSIBLE MANAGED RUNC RULES"
-      block: |
-        # Reglas dinámicas validadas
+      profile usr.bin.runc flags=(attach_disconnected,mediate_deleted) {
 
         #include <abstractions/base>
 
-        {{ rules_content.content | b64decode }}
-
+        # CAPABILITIES
         capability,
         network,
         file,
         mount,
-    when: apply_ready
 
-  ##################################################
-  # 10. VALIDACIÓN SINTAXIS REAL
-  ##################################################
+        # LIBS
+        /lib/** r,
+        /usr/lib/** r,
+        /etc/ld.so.cache r,
 
-  - name: Validar sintaxis AppArmor
-    command: apparmor_parser -Q {{ profile }}
-    register: syntax_check
+        # CONTAINER RUNTIME
+        /run/containerd/** rw,
+        /var/lib/containerd/** rw,
+        /var/lib/docker/** rw,
+        /opt/containerd/** r,
+
+        # DEVICES
+        /dev/** rw,
+
+        # SAFE PROC/SYS ACCESS
+        /proc/** r,
+        /sys/** r,
+
+        # TEMP FILES
+        /tmp/** rw,
+        /var/tmp/** rw,
+
+        # DOCKER SOCKET
+        /var/run/docker.sock rw,
+
+        # LOGGING
+        /var/log/** r,
+      }
+
+  tasks:
+
+  # 1. Detectar runc
+  - name: Verificar runc
+    command: which runc
+    register: runc_check
     failed_when: false
     changed_when: false
-    when: apply_ready
 
-  ##################################################
-  # 11. STOP SI ES INVÁLIDO
-  ##################################################
+  # 2. Determinar aplicabilidad
+  - name: Validar host
+    set_fact:
+      apply_profile: "{{ runc_check.rc == 0 }}"
 
-  - name: Detener si sintaxis inválida
+  - name: Estado
+    debug:
+      msg: >
+        {{ inventory_hostname }} →
+        {{ 'APLICAR BASELINE ✅' if apply_profile else 'OMITIDO 🚫' }}
+
+  # 3. Backup
+  - name: Backup profile existente
+    copy:
+      src: "{{ profile }}"
+      dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
+      remote_src: yes
+    ignore_errors: yes
+    when: apply_profile
+
+  # 4. Deploy baseline limpio
+  - name: Crear profile limpio
+    copy:
+      dest: "{{ profile }}"
+      content: "{{ baseline_profile }}"
+    when: apply_profile
+
+  # 5. Validar sintaxis
+  - name: Validar AppArmor
+    command: apparmor_parser -Q {{ profile }}
+    register: syntax
+    failed_when: false
+    changed_when: false
+    when: apply_profile
+
+  - name: Fallar si inválido
     fail:
-      msg: "AppArmor inválido. Ejecutar rollback."
-    when: apply_ready and syntax_check.rc != 0
+      msg: "Baseline inválido (no debería pasar)"
+    when: apply_profile and syntax.rc != 0
 
-  ##################################################
-  # 12. APPLY FINAL SEGURO
-  ##################################################
-
+  # 6. Aplicar
   - name: Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
-    when: apply_ready and syntax_check.rc == 0
+    when: apply_profile
 
-  - name: Activar enforce
+  - name: Enforce
     command: aa-enforce usr.bin.runc
-    when: apply_ready and syntax_check.rc == 0
+    when: apply_profile
