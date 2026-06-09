@@ -6,7 +6,6 @@
   vars:
     working_dir: /tmp/apparmor_tuning
     audit_log: /var/log/audit/audit.log
-    state_file: /tmp/apparmor_tuning/state.json
 
   tasks:
 
@@ -48,11 +47,11 @@
     register: log_file
     when: apparmor_candidate
 
-  - name: 🧠 Marcar host con datos
+  - name: 🧠 Marcar estado
     set_fact:
       apparmor_active: "{{ apparmor_candidate and log_file.stat.exists and log_file.stat.size > 0 }}"
 
-  - name: 💾 Persistir estado por host
+  - name: 💾 Persistir estado
     copy:
       content: |
         {
