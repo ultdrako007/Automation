@@ -55,7 +55,11 @@
     stat:
       path: "{{ audit_log_path }}"
     register: audit_log
-    when: apparmor_applicable
+    when: 
+          -apparmor_applicable
+          - collected_log.stat.exists
+          - collected_log.stat.size > 0
+
 
   # 🔹 7. Crear carpeta solo si aplica
   - name: 📁 Crear carpeta de trabajo
