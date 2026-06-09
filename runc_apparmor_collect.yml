@@ -26,4 +26,3 @@
       src: /tmp/apparmor_tuning.tar.gz
       dest: ./collected_logs/
       flat: yes
-``
