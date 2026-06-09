@@ -1,0 +1,29 @@
+---
+- name: Recolección de logs AppArmor / auditd
+  hosts: all
+  become: yes
+
+  tasks:
+
+  - name: Crear carpeta de trabajo
+    file:
+      path: /tmp/apparmor_tuning
+      state: directory
+
+  - name: Extraer eventos relevantes (runc)
+    shell: |
+      grep 'runc' /var/log/audit/audit.log | \
+      grep -E 'DENIED|apparmor' > /tmp/apparmor_tuning/runc_raw.log
+    args:
+      executable: /bin/bash
+
+  - name: Comprimir evidencia
+    archive:
+      path: /tmp/apparmor_tuning/
+      dest: /tmp/apparmor_tuning.tar.gz
+
+  - fetch:
+      src: /tmp/apparmor_tuning.tar.gz
+      dest: ./collected_logs/
+      flat: yes
+``
