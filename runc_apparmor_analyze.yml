@@ -1,5 +1,5 @@
 ---
-- name: Analyze inteligente AppArmor
+- name: Analyze inteligente AppArmor (basado en estado real)
   hosts: all
   become: yes
 
@@ -8,18 +8,23 @@
 
   tasks:
 
-  - name: 🔍 Validar si hay datos
-    stat:
-      path: "{{ working_dir }}/runc_raw.log"
-    register: log_file
+  - name: 🔍 Leer estado del host
+    slurp:
+      src: "{{ working_dir }}/state.json"
+    register: state_file
+    ignore_errors: yes
 
-  - name: 🧠 Determinar ejecución
+  - name: 🧠 Parsear estado
     set_fact:
-      apparmor_active: "{{ log_file.stat.exists and log_file.stat.size > 0 }}"
+      state: "{{ state_file.content | b64decode | from_json }}"
+    when: state_file is defined and state_file.content is defined
+    failed_when: false
 
-  - name: 📊 Estado
+  - name: 📊 Estado Analyze
     debug:
-      msg: "{{ inventory_hostname }} → {{ 'ANALIZAR ✅' if apparmor_active else 'OMITIDO 🚫' }}"
+      msg: >
+        {{ inventory_hostname }} →
+        {{ 'ANALIZAR ✅' if (state.active | default(false)) else 'OMITIDO 🚫' }}
 
   - name: 🔍 Extraer paths
     shell: |
@@ -28,4 +33,4 @@
       awk -F 'name=' '{print $2}' | \
       awk '{print $1}' | tr -d '"' | \
       sort | uniq > {{ working_dir }}/runc_paths.txt
-    when: apparmor_active
+    when: state.active | default(false)
