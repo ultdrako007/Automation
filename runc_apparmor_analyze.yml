@@ -1,0 +1,31 @@
+---
+- name: Analizar y generar reglas base
+  hosts: all
+  become: yes
+
+  vars:
+    output_rules: /tmp/runc_profile_rules.txt
+
+  tasks:
+
+  - name: Extraer paths únicos
+    shell: |
+      cat /var/log/audit/audit.log | \
+      grep runc | grep DENIED | grep 'name=' | \
+      awk -F 'name=' '{print $2}' | \
+      awk '{print $1}' | tr -d '"' | \
+      sort | uniq > /tmp/runc_paths.txt
+
+  - name: Generar reglas simples
+    shell: |
+      echo "# Generated rules" > {{ output_rules }}
+      while read path; do
+        echo "$path r," >> {{ output_rules }}
+      done < /tmp/runc_paths.txt
+
+  - name: Mostrar reglas
+    command: cat {{ output_rules }}
+    register: rules
+
+  - debug:
+      var: rules.stdout_lines
