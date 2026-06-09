@@ -1,60 +1,47 @@
 ---
-- name: Aplicación segura de profile AppArmor
+- name: Apply inteligente AppArmor
   hosts: all
   become: yes
 
   vars:
     working_dir: /tmp/apparmor_tuning
-    profile_path: /etc/apparmor.d/usr.bin.runc
+    profile: /etc/apparmor.d/usr.bin.runc
 
   tasks:
 
-  - name: 🔍 Verificar reglas generadas
+  - name: 🔍 Validar reglas
     stat:
-      path: "{{ working_dir }}/runc_rules_final.txt"
-    register: rules_file
+      path: "{{ working_dir }}/rules_optimized.txt"
+    register: rules
 
-  - name: 🧠 Determinar si aplicar cambios
+  - name: 🧠 Determinar aplicación
     set_fact:
-      apply_applicable: "{{ rules_file.stat.exists and rules_file.stat.size > 0 }}"
+      apparmor_active: "{{ rules.stat.exists and rules.stat.size > 0 }}"
 
-  - name: 📊 Estado Apply
+  - name: 📊 Estado
     debug:
-      msg: >
-        {{ inventory_hostname }} →
-        {{ 'APLICAR ✅' if apply_applicable else 'SIN CAMBIOS 🚫' }}
+      msg: "{{ inventory_hostname }} → {{ 'APLICAR ✅' if apparmor_active else 'OMITIDO 🚫' }}"
 
-  - name: 💾 Backup profile actual
+  - name: 💾 Backup
     copy:
-      src: "{{ profile_path }}"
-      dest: "{{ profile_path }}.bak_{{ ansible_date_time.iso8601 }}"
+      src: "{{ profile }}"
+      dest: "{{ profile }}.bak_{{ ansible_date_time.iso8601 }}"
       remote_src: yes
-    when: apply_applicable
+    when: apparmor_active
     ignore_errors: yes
 
-  - name: 🔧 Insertar reglas optimizadas
+  - name: 🔧 Insertar reglas
     blockinfile:
-      path: "{{ profile_path }}"
-      marker: "# {mark} ANSIBLE MANAGED RUNC RULES"
-      block: "{{ lookup('file', working_dir + '/runc_rules_final.txt') }}"
-    when: apply_applicable
+      path: "{{ profile }}"
+      marker: "# ANSIBLE MANAGED"
+      block: "{{ lookup('file', working_dir + '/rules_optimized.txt') }}"
+    when: apparmor_active
 
   - name: 🔄 Recargar AppArmor
-    command: apparmor_parser -r {{ profile_path }}
-    when: apply_applicable
+    command: apparmor_parser -r {{ profile }}
+    when: apparmor_active
 
-  - name: 🔒 Activar enforce
+  - name: 🔒 Enforce
     command: aa-enforce usr.bin.runc
-    when: apply_applicable
-
-  - name: ✅ Validar Docker
-    command: docker ps
-    register: docker_status
-    changed_when: false
-    failed_when: false
-    when: apply_applicable
-
-  - name: 🚫 Host sin cambios
-    debug:
-      msg: "No se aplican cambios en este host"
-    when: not apply_applicable
+    when: apparmor_active
+``
