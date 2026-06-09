@@ -1,19 +1,18 @@
 ---
-- name: Apply AppArmor (seguro + sintaxis correcta)
+- name: Apply AppArmor (final sin errores)
   hosts: all
   become: yes
 
   vars:
     working_dir: /tmp/apparmor_tuning
     profile: /etc/apparmor.d/usr.bin.runc
-    temp_rules: /tmp/apparmor_tuning/rules.cleaned.txt
+    cleaned_rules: /tmp/apparmor_tuning/rules.cleaned.txt
 
   tasks:
 
   # -------------------------
-  # 1. VALIDACIONES
+  # 1. STATE
   # -------------------------
-
   - name: 🔍 Verificar state.json
     stat:
       path: "{{ working_dir }}/state.json"
@@ -30,65 +29,57 @@
       state: "{{ state_file.content | b64decode | from_json }}"
     when: state_stat.stat.exists
 
-  - name: 🧠 Default
+  - name: 🧠 Default seguro
     set_fact:
       state:
         active: false
     when: not state_stat.stat.exists
 
+  # -------------------------
+  # 2. VALIDACIONES
+  # -------------------------
   - name: 🔍 Verificar profile
     stat:
       path: "{{ profile }}"
     register: profile_stat
 
-  - name: 🔍 Verificar reglas
+  - name: 🔍 Verificar reglas limpias
     stat:
-      path: "{{ working_dir }}/rules_optimized.txt"
-    register: rules_stat
+      path: "{{ cleaned_rules }}"
+    register: cleaned_stat
 
   # -------------------------
-  # 2. CONDICIÓN FINAL
+  # 3. CONDICIÓN FINAL
   # -------------------------
-
-  - name: 🧠 Evaluar ejecución
+  - name: 🧠 Evaluar ejecución final
     set_fact:
       apply_ready: >
         {{ state.active
            and profile_stat.stat.exists
-           and rules_stat.stat.exists
-           and rules_stat.stat.size > 0 }}
+           and cleaned_stat.stat.exists
+           and cleaned_stat.stat.size > 0 }}
 
-  - name: 📊 Estado final
+  - name: 📊 Estado completo
     debug:
       msg: >
         {{ inventory_hostname }} →
-        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }}
+        {{ 'APLICAR ✅' if apply_ready else 'OMITIDO 🚫' }} |
+        profile={{ profile_stat.stat.exists }},
+        cleaned_rules={{ cleaned_stat.stat.exists }},
+        size={{ cleaned_stat.stat.size | default('0') }}
 
   # -------------------------
-  # 3. LIMPIEZA DE REGLAS (CRÍTICO)
+  # 4. LEER REGLAS REMOTAS (FIX CLAVE)
   # -------------------------
-
-  - name: 📥 Leer reglas crudas
+  - name: 📥 Leer reglas limpias (REMOTO)
     slurp:
-      src: "{{ working_dir }}/rules_optimized.txt"
+      src: "{{ cleaned_rules }}"
     register: rules_content
     when: apply_ready
 
-  - name: 🧹 Limpiar reglas inválidas
-    copy:
-      dest: "{{ temp_rules }}"
-      content: |
-        {% for line in (rules_content.content | b64decode).splitlines() %}
-        {% if line.startswith('/') and ' ' in line %}
-        {{ line }}
-        {% endif %}
-        {% endfor %}
-    when: apply_ready
-
   # -------------------------
-  # 4. BACKUP
+  # 5. BACKUP
   # -------------------------
-
   - name: 💾 Backup profile
     copy:
       src: "{{ profile }}"
@@ -97,38 +88,33 @@
     when: apply_ready
 
   # -------------------------
-  # 5. INSERCIÓN SEGURA
+  # 6. INSERTAR REGLAS
   # -------------------------
-
-  - name: 🔧 Insertar reglas dentro del profile
+  - name: 🔧 Insertar reglas correctamente
     blockinfile:
       path: "{{ profile }}"
       marker: "# ANSIBLE MANAGED RUNC RULES"
-      block: |
-        # Reglas generadas dinámicamente
-        {{ lookup('file', temp_rules) }}
+      block: "{{ rules_content.content | b64decode }}"
     when: apply_ready
 
   # -------------------------
-  # 6. VALIDACIÓN PREVIA (MUY IMPORTANTE)
+  # 7. VALIDAR SINTAXIS
   # -------------------------
-
-  - name: 🧪 Validar sintaxis antes de aplicar
+  - name: 🧪 Validar sintaxis AppArmor
     command: apparmor_parser -Q {{ profile }}
     register: syntax_check
     failed_when: false
     changed_when: false
     when: apply_ready
 
-  - name: ⚠️ Detener si la sintaxis es inválida
+  - name: ❌ Fallar si sintaxis inválida
     fail:
-      msg: "Error de sintaxis en profile AppArmor, rollback recomendado"
+      msg: "Error de sintaxis en AppArmor. Ejecuta rollback."
     when: apply_ready and syntax_check.rc != 0
 
   # -------------------------
-  # 7. APLICAR SOLO SI VALIDA
+  # 8. APPLY REAL
   # -------------------------
-
   - name: 🔄 Recargar AppArmor
     command: apparmor_parser -r {{ profile }}
     when: apply_ready and syntax_check.rc == 0
