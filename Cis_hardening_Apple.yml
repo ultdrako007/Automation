@@ -10,12 +10,47 @@
 
   vars:
     policy_banner_text: |
-      ******************************************************************
-      AVISO: Este sistema es propiedad de la organización.
-      El acceso no autorizado está prohibido y será perseguido
-      conforme a las leyes aplicables. Al continuar, usted acepta
-      que su actividad puede ser monitoreada y registrada.
-      ******************************************************************
+      ══════════════════════════════════════════════════════════════════
+                          🏰 Torre de Babel 🏰
+                   Terminal del Gremio de Orario - MX
+      ══════════════════════════════════════════════════════════════════
+
+      🏛️ ¡Alerta del Gremio de Orario - Oficina de Seguridad del Dungeon
+         (Sede México)! MX ⚔️
+
+      Antes de descender al Dungeon del Acceso Remoto, atento/a,
+      aventurero/a:
+
+        "El mayor peligro no viene de los Monster Rex...
+         sino de las contraseñas como 'BellCranel123'."
+              — Eina Tulle (Asesora del Gremio, Dept. de Ciberseguridad)
+
+      🔔  Recuerda:
+        Tu Falna (contraseña) es sagrada: compleja, protegida por tu
+        deidad y nunca compartida con nadie de otra Familia.
+
+        No abras pergaminos con "¡Felicidades, ganaste un Grimoire
+        Legendario!"... ¡es trampa de un Vouivre de Phishing!
+
+        Los hechizos de "Acceso Rápido" (Firebolt) suelen invocar
+        vulnerabilidades. Usa autenticación de dos factores (2FA),
+        ¡como un verdadero aventurero Nivel 6!
+
+        Si ves algo raro... no digas "¡Argonaut!" y lo ignores.
+        Reporta al Escuadrón de la Familia Ganesha (Soporte TI).
+
+      🛡️  Protege tus datos como si fueran la Piedra Espiritual de un
+        Monster Rex... porque lo son.
+
+      ⚠️  Acceso autorizado solo para aventureros con Falna registrada
+        (y buen juicio).
+        El uso indebido será registrado en tu Status...
+        y en el Active Directory.
+
+      🏰  Que Hestia y tu firewall te protejan.
+                    — Gremio de Orario (TI) ⚔️🛡️
+
+      ══════════════════════════════════════════════════════════════════
 
   tasks:
 
