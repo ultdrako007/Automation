@@ -1,0 +1,135 @@
+---
+# cis_macos_tahoe_safe_hardening.yml
+# Aplica los 8 controles CIS "sin riesgo" para macOS 26.x Tahoe (Apple Silicon M2)
+# Requiere: community.general collection (ansible-galaxy collection install community.general)
+
+- name: CIS macOS Tahoe 26.5.1 - Controles seguros
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    policy_banner_text: |
+      ******************************************************************
+      AVISO: Este sistema es propiedad de la organización.
+      El acceso no autorizado está prohibido y será perseguido
+      conforme a las leyes aplicables. Al continuar, usted acepta
+      que su actividad puede ser monitoreada y registrada.
+      ******************************************************************
+
+  tasks:
+
+    # ═══════════════════════════════════════════════════════════════
+    # 1. CIS 2.9.1 - Desactivar "Help Apple Improve Search"
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 2.9.1 | Disable Help Apple Improve Search"
+      community.general.osx_defaults:
+        domain: com.apple.assistant.support
+        key: "Search Queries Data Sharing Status"
+        type: int
+        value: 2
+        state: present
+      tags: [cis_2.9.1, privacy]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 2. CIS 2.11.5 - Desactivar Password Hints
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 2.11.5 | Disable Show Password Hints"
+      community.general.osx_defaults:
+        domain: /Library/Preferences/com.apple.loginwindow
+        key: RetriesUntilHint
+        type: int
+        value: 0
+        state: present
+      tags: [cis_2.11.5, authentication]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 3. CIS 2.18.1 - Forzar dictado solo en el dispositivo
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 2.18.1 | Force On-Device Only Dictation"
+      community.general.osx_defaults:
+        domain: com.apple.applicationaccess
+        key: forceOnDeviceOnlyDictation
+        type: bool
+        value: true
+        state: present
+      tags: [cis_2.18.1, privacy]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 4. CIS 3.3 - Retener install.log por 365+ días
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 3.3 | Ensure install.log retained for 365+ days (add ttl)"
+      ansible.builtin.lineinfile:
+        path: /etc/asl/com.apple.install
+        regexp: '^(\* file /var/log/install\.log.*)'
+        line: '* file /var/log/install.log format=bsd rotate=utc ttl=365'
+        backrefs: true
+      tags: [cis_3.3, logging]
+
+    - name: "CIS 3.3 | Remove all_max from install.log config"
+      ansible.builtin.replace:
+        path: /etc/asl/com.apple.install
+        regexp: 'all_max=\S+'
+        replace: ''
+      tags: [cis_3.3, logging]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 5. CIS 4.1 - Desactivar Bonjour Advertising
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 4.1 | Disable Bonjour Advertising Services"
+      community.general.osx_defaults:
+        domain: /Library/Preferences/com.apple.mDNSResponder
+        key: NoMulticastAdvertisements
+        type: bool
+        value: true
+        state: present
+      tags: [cis_4.1, network]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 6. CIS 4.3 - Desactivar servidor NFS
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 4.3 | Disable NFS server via launchctl"
+      ansible.builtin.command:
+        cmd: /bin/launchctl disable system/com.apple.nfsd
+      changed_when: true
+      tags: [cis_4.3, services]
+
+    - name: "CIS 4.3 | Remove /etc/exports if it exists"
+      ansible.builtin.file:
+        path: /etc/exports
+        state: absent
+      tags: [cis_4.3, services]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 7. CIS 5.8 - Crear banner de inicio de sesión
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 5.8 | Create Login Window PolicyBanner"
+      ansible.builtin.copy:
+        content: "{{ policy_banner_text }}"
+        dest: /Library/Security/PolicyBanner.txt
+        owner: root
+        group: wheel
+        mode: '0644'
+      tags: [cis_5.8, access_warning]
+
+    # ═══════════════════════════════════════════════════════════════
+    # 8. CIS 5.11 - Habilitar logging de sudo
+    # ═══════════════════════════════════════════════════════════════
+    - name: "CIS 5.11 | Ensure /etc/sudoers.d/ has correct ownership"
+      ansible.builtin.file:
+        path: /etc/sudoers.d
+        owner: root
+        group: wheel
+        mode: '0755'
+        state: directory
+      tags: [cis_5.11, sudo]
+
+    - name: "CIS 5.11 | Enable sudo logging (log_allowed)"
+      ansible.builtin.copy:
+        content: "Defaults log_allowed\n"
+        dest: /etc/sudoers.d/10_cis_sudo_logging
+        owner: root
+        group: wheel
+        mode: '0440'
+        validate: /usr/sbin/visudo -cf %s
+      tags: [cis_5.11, sudo]
