@@ -20,10 +20,12 @@
 
   vars:
     min_versions:
-      pip: "23.3"
+      pip: "26.1.2"
       setuptools: "78.1.1"
       wheel: "0.38.1"
       future: "0.18.3"
+    brew_path: /opt/homebrew/bin/brew
+    pip_cmd: /opt/homebrew/bin/python3 -m pip
 
   tasks:
 
@@ -33,23 +35,11 @@
 
     - name: "🔍 DETECT | Verificar si Homebrew está instalado"
       ansible.builtin.stat:
-        path: /opt/homebrew/bin/brew
+        path: "{{ brew_path }}"
       register: homebrew_check
       tags: [detect, update]
 
-    - name: "🔍 DETECT | Verificar pip3 en Homebrew (/opt/homebrew/bin/pip3)"
-      ansible.builtin.stat:
-        path: /opt/homebrew/bin/pip3
-      register: homebrew_pip
-      tags: [detect, update]
-
-    - name: "🔍 DETECT | Verificar pip3 en /usr/local/bin (Intel o pip directo)"
-      ansible.builtin.stat:
-        path: /usr/local/bin/pip3
-      register: local_pip
-      tags: [detect, update]
-
-    - name: "🔍 DETECT | Verificar python3 -m pip funciona (Homebrew)"
+    - name: "🔍 DETECT | Verificar python3 -m pip funciona"
       ansible.builtin.command:
         cmd: /opt/homebrew/bin/python3 -m pip --version
       register: python_m_pip
@@ -57,41 +47,13 @@
       failed_when: false
       tags: [detect, update]
 
-    - name: "🔍 DETECT | Verificar python3 -m pip funciona (/usr/local)"
-      ansible.builtin.command:
-        cmd: /usr/local/bin/python3 -m pip --version
-      register: local_python_m_pip
+    - name: "🔍 DETECT | Verificar si pip es gestionado por Homebrew"
+      ansible.builtin.shell:
+        cmd: "{{ brew_path }} list python3 2>/dev/null && echo 'BREW_MANAGED' || echo 'NOT_BREW'"
+      register: brew_manages_python
       changed_when: false
       failed_when: false
-      when: not homebrew_pip.stat.exists
-      tags: [detect, update]
-
-    - name: "🔍 DETECT | Determinar método de pip a usar"
-      ansible.builtin.set_fact:
-        pip_method: >-
-          {%- if homebrew_check.stat.exists and python_m_pip.rc == 0 -%}
-          homebrew
-          {%- elif homebrew_pip.stat.exists -%}
-          homebrew_pip
-          {%- elif local_pip.stat.exists -%}
-          local_pip
-          {%- elif local_python_m_pip.rc | default(1) == 0 -%}
-          local_python
-          {%- else -%}
-          not_found
-          {%- endif -%}
-        pip_cmd: >-
-          {%- if homebrew_check.stat.exists and python_m_pip.rc == 0 -%}
-          /opt/homebrew/bin/python3 -m pip
-          {%- elif homebrew_pip.stat.exists -%}
-          /opt/homebrew/bin/pip3
-          {%- elif local_pip.stat.exists -%}
-          /usr/local/bin/pip3
-          {%- elif local_python_m_pip.rc | default(1) == 0 -%}
-          /usr/local/bin/python3 -m pip
-          {%- else -%}
-          pip3
-          {%- endif -%}
+      become: false
       tags: [detect, update]
 
     - name: "🔍 DETECT | Mostrar método detectado"
@@ -99,16 +61,10 @@
         msg: |
           ═══════════════════════════════════════════════
           Host: {{ inventory_hostname }}
-          Método pip detectado: {{ pip_method | trim }}
-          Comando a usar: {{ pip_cmd | trim }}
           Homebrew: {{ 'Sí' if homebrew_check.stat.exists else 'No' }}
+          Python gestionado por Brew: {{ 'Sí' if 'BREW_MANAGED' in brew_manages_python.stdout else 'No' }}
+          pip: {{ python_m_pip.stdout | default('No encontrado') }}
           ═══════════════════════════════════════════════
-      tags: [detect, update]
-
-    - name: "❌ DETECT | Fallar si no se encontró pip"
-      ansible.builtin.fail:
-        msg: "No se encontró pip en ninguna ruta conocida. Instala Python3 con Homebrew: brew install python@3"
-      when: pip_method | trim == 'not_found'
       tags: [detect, update]
 
     # ══════════════════════════════════════════════════════════════
@@ -117,7 +73,7 @@
 
     - name: "📋 BEFORE | Obtener versión actual de pip"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show pip 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show pip 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: pip_before
       changed_when: false
       failed_when: false
@@ -125,7 +81,7 @@
 
     - name: "📋 BEFORE | Obtener versión actual de setuptools"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: setuptools_before
       changed_when: false
       failed_when: false
@@ -133,7 +89,7 @@
 
     - name: "📋 BEFORE | Obtener versión actual de wheel"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show wheel 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show wheel 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: wheel_before
       changed_when: false
       failed_when: false
@@ -141,42 +97,69 @@
 
     - name: "📋 BEFORE | Obtener versión actual de future"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show future 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show future 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: future_before
       changed_when: false
       failed_when: false
       tags: [audit, update]
 
     # ══════════════════════════════════════════════════════════════
-    # FASE 2: Actualización de paquetes
+    # FASE 2A: Actualización via Homebrew (pip, setuptools, wheel)
     # ══════════════════════════════════════════════════════════════
 
-    - name: "⬆️ UPDATE | Actualizar pip (siempre primero)"
+    - name: "🍺 UPDATE | Actualizar Python3 via Homebrew (incluye pip, setuptools, wheel)"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages pip"
-      register: pip_upgrade
-      changed_when: "'Successfully installed' in pip_upgrade.stdout"
+        cmd: "{{ brew_path }} upgrade python3"
+      register: brew_python_upgrade
+      changed_when: "'Upgrading' in brew_python_upgrade.stdout or 'upgraded' in brew_python_upgrade.stderr"
+      failed_when: false
+      become: false
+      when: "'BREW_MANAGED' in brew_manages_python.stdout"
       tags: [update]
 
-    - name: "⬆️ UPDATE | Actualizar setuptools"
+    - name: "🍺 UPDATE | Actualizar python-setuptools via Homebrew"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages setuptools"
-      register: setuptools_upgrade
-      changed_when: "'Successfully installed' in setuptools_upgrade.stdout"
+        cmd: "{{ brew_path }} upgrade python-setuptools"
+      register: brew_setuptools_upgrade
+      changed_when: "'Upgrading' in brew_setuptools_upgrade.stdout or 'upgraded' in brew_setuptools_upgrade.stderr"
+      failed_when: false
+      become: false
+      when: "'BREW_MANAGED' in brew_manages_python.stdout"
       tags: [update]
 
-    - name: "⬆️ UPDATE | Actualizar wheel"
-      ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages wheel"
-      register: wheel_upgrade
-      changed_when: "'Successfully installed' in wheel_upgrade.stdout"
-      tags: [update]
+    # ══════════════════════════════════════════════════════════════
+    # FASE 2B: Actualización via pip (future + fallback)
+    # ══════════════════════════════════════════════════════════════
 
-    - name: "⬆️ UPDATE | Actualizar future"
+    - name: "⬆️ UPDATE | Actualizar future via pip (no es paquete de Homebrew)"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages future"
+        cmd: "{{ pip_cmd }} install --upgrade --break-system-packages future"
       register: future_upgrade
       changed_when: "'Successfully installed' in future_upgrade.stdout"
+      tags: [update]
+
+    - name: "⬆️ FALLBACK | Actualizar pip via pip (si no es Homebrew)"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd }} install --upgrade --break-system-packages pip"
+      register: pip_upgrade_fallback
+      changed_when: "'Successfully installed' in pip_upgrade_fallback.stdout"
+      when: "'BREW_MANAGED' not in brew_manages_python.stdout"
+      tags: [update]
+
+    - name: "⬆️ FALLBACK | Actualizar setuptools via pip (si no es Homebrew)"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd }} install --upgrade --break-system-packages setuptools"
+      register: setuptools_upgrade_fallback
+      changed_when: "'Successfully installed' in setuptools_upgrade_fallback.stdout"
+      when: "'BREW_MANAGED' not in brew_manages_python.stdout"
+      tags: [update]
+
+    - name: "⬆️ FALLBACK | Actualizar wheel via pip (si no es Homebrew)"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd }} install --upgrade --break-system-packages wheel"
+      register: wheel_upgrade_fallback
+      changed_when: "'Successfully installed' in wheel_upgrade_fallback.stdout"
+      when: "'BREW_MANAGED' not in brew_manages_python.stdout"
       tags: [update]
 
     # ══════════════════════════════════════════════════════════════
@@ -185,7 +168,7 @@
 
     - name: "🔍 AFTER | Obtener versión nueva de pip"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show pip 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show pip 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: pip_after
       changed_when: false
       failed_when: false
@@ -193,7 +176,7 @@
 
     - name: "🔍 AFTER | Obtener versión nueva de setuptools"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: setuptools_after
       changed_when: false
       failed_when: false
@@ -201,7 +184,7 @@
 
     - name: "🔍 AFTER | Obtener versión nueva de wheel"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show wheel 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show wheel 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: wheel_after
       changed_when: false
       failed_when: false
@@ -209,7 +192,7 @@
 
     - name: "🔍 AFTER | Obtener versión nueva de future"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd | trim }} show future 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ pip_cmd }} show future 2>/dev/null | grep '^Version:' | awk '{print $2}'"
       register: future_after
       changed_when: false
       failed_when: false
@@ -233,7 +216,7 @@
 
     - name: "🔒 SECURITY | Ejecutar pip audit"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} audit"
+        cmd: "{{ pip_cmd }} audit"
       register: pip_audit
       changed_when: false
       failed_when: false
@@ -252,8 +235,7 @@
           ══════════════════════════════════════════════════════════════════
           Host: {{ inventory_hostname }}
           Fecha: {{ lookup('pipe', 'date "+%Y-%m-%d %H:%M:%S"') }}
-          Método pip: {{ pip_method | trim }}
-          Comando: {{ pip_cmd | trim }}
+          Método: {{ 'Homebrew + pip' if 'BREW_MANAGED' in brew_manages_python.stdout else 'pip directo' }}
           ──────────────────────────────────────────────────────────────────
 
           📦 VERSIONES
