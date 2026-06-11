@@ -152,28 +152,28 @@
 
     - name: "⬆️ UPDATE | Actualizar pip (siempre primero)"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade pip"
+        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages pip"
       register: pip_upgrade
       changed_when: "'Successfully installed' in pip_upgrade.stdout"
       tags: [update]
 
     - name: "⬆️ UPDATE | Actualizar setuptools"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade setuptools"
+        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages setuptools"
       register: setuptools_upgrade
       changed_when: "'Successfully installed' in setuptools_upgrade.stdout"
       tags: [update]
 
     - name: "⬆️ UPDATE | Actualizar wheel"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade wheel"
+        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages wheel"
       register: wheel_upgrade
       changed_when: "'Successfully installed' in wheel_upgrade.stdout"
       tags: [update]
 
     - name: "⬆️ UPDATE | Actualizar future"
       ansible.builtin.command:
-        cmd: "{{ pip_cmd | trim }} install --upgrade future"
+        cmd: "{{ pip_cmd | trim }} install --upgrade --break-system-packages future"
       register: future_upgrade
       changed_when: "'Successfully installed' in future_upgrade.stdout"
       tags: [update]
@@ -292,4 +292,11 @@
         success_msg: "🏰 ¡Todos los paquetes actualizados y CVEs remediados! El Gremio de Orario aprueba. ⚔️"
         fail_msg: "⚠️ Uno o más paquetes no alcanzaron la versión mínima requerida. Revisa el reporte."
       tags: [assert, update]
+"""
 
+with open('/tmp/update_python_packages_macos.yml', 'w') as f:
+    f.write(playbook)
+
+print("Archivo guardado: update_python_packages_macos.yml")
+print(f"Tamaño: {len(playbook)} caracteres")
+print(f"Líneas: {len(playbook.splitlines())}")
