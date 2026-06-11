@@ -1,3 +1,4 @@
+---
 # ══════════════════════════════════════════════════════════════════
 # 🏰 Drakos Cave - Actualización de paquetes Python vulnerables
 # Remediación de CVEs detectados por Wazuh en macOS Tahoe M2
@@ -292,11 +293,3 @@
         success_msg: "🏰 ¡Todos los paquetes actualizados y CVEs remediados! El Gremio de Orario aprueba. ⚔️"
         fail_msg: "⚠️ Uno o más paquetes no alcanzaron la versión mínima requerida. Revisa el reporte."
       tags: [assert, update]
-"""
-
-with open('/tmp/update_python_packages_macos.yml', 'w') as f:
-    f.write(playbook)
-
-print("Archivo guardado: update_python_packages_macos.yml")
-print(f"Tamaño: {len(playbook)} caracteres")
-print(f"Líneas: {len(playbook.splitlines())}")
