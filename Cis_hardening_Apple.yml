@@ -168,3 +168,22 @@
         mode: '0440'
         validate: /usr/sbin/visudo -cf %s
       tags: [cis_5.11, sudo]
+
+      # ═══════════════════════════════════════════════════════════════
+    # 9. Ocultar cuenta de servicio ansible_svc
+    # ═══════════════════════════════════════════════════════════════
+    - name: "SECURITY | Ocultar usuario ansible_svc de la pantalla de login"
+      ansible.builtin.command:
+        cmd: dscl . create /Users/ansible_svc IsHidden 1
+      register: hide_user_result
+      changed_when: hide_user_result.rc == 0
+      failed_when: hide_user_result.rc != 0
+      tags: [hide_user, security]
+
+    - name: "SECURITY | Ocultar carpeta Home de ansible_svc"
+      ansible.builtin.command:
+        cmd: chflags hidden /Users/ansible_svc
+      register: hide_home_result
+      changed_when: hide_home_result.rc == 0
+      failed_when: hide_home_result.rc != 0
+      tags: [hide_user, security]
