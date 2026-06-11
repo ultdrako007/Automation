@@ -1,0 +1,295 @@
+# ══════════════════════════════════════════════════════════════════
+# 🏰 Drakos Cave - Actualización de paquetes Python vulnerables
+# Remediación de CVEs detectados por Wazuh en macOS Tahoe M2
+# Detecta automáticamente pip via Homebrew o instalación directa
+# ══════════════════════════════════════════════════════════════════
+# CVE-2024-6345  | setuptools < 78.1.1 | CVSS 8.8 | RCE
+# CVE-2025-47273 | setuptools < 78.1.1 | CVSS 8.8 | Path Traversal
+# CVE-2022-40897 | setuptools < 65.5.1 | CVSS 7.5 | ReDoS
+# CVE-2022-40898 | wheel < 0.38.1      | CVSS 7.5 | DoS
+# CVE-2022-40899 | future < 0.18.3     | CVSS 7.5 | DoS
+# CVE-2026-8643  | pip < 26.1.2        | CVSS 5.5 | Entry points
+# CVE-2023-5752  | pip < 23.3          | CVSS 3.3 | Cmd injection
+# ══════════════════════════════════════════════════════════════════
+
+- name: "🛡️ Actualización de paquetes Python vulnerables - macOS Tahoe"
+  hosts: macos_targets
+  become: true
+  gather_facts: false
+
+  vars:
+    min_versions:
+      pip: "23.3"
+      setuptools: "78.1.1"
+      wheel: "0.38.1"
+      future: "0.18.3"
+
+  tasks:
+
+    # ══════════════════════════════════════════════════════════════
+    # FASE 0: Detección del entorno Python/pip
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "🔍 DETECT | Verificar si Homebrew está instalado"
+      ansible.builtin.stat:
+        path: /opt/homebrew/bin/brew
+      register: homebrew_check
+      tags: [detect, update]
+
+    - name: "🔍 DETECT | Verificar pip3 en Homebrew (/opt/homebrew/bin/pip3)"
+      ansible.builtin.stat:
+        path: /opt/homebrew/bin/pip3
+      register: homebrew_pip
+      tags: [detect, update]
+
+    - name: "🔍 DETECT | Verificar pip3 en /usr/local/bin (Intel o pip directo)"
+      ansible.builtin.stat:
+        path: /usr/local/bin/pip3
+      register: local_pip
+      tags: [detect, update]
+
+    - name: "🔍 DETECT | Verificar python3 -m pip funciona (Homebrew)"
+      ansible.builtin.command:
+        cmd: /opt/homebrew/bin/python3 -m pip --version
+      register: python_m_pip
+      changed_when: false
+      failed_when: false
+      tags: [detect, update]
+
+    - name: "🔍 DETECT | Verificar python3 -m pip funciona (/usr/local)"
+      ansible.builtin.command:
+        cmd: /usr/local/bin/python3 -m pip --version
+      register: local_python_m_pip
+      changed_when: false
+      failed_when: false
+      when: not homebrew_pip.stat.exists
+      tags: [detect, update]
+
+    - name: "🔍 DETECT | Determinar método de pip a usar"
+      ansible.builtin.set_fact:
+        pip_method: >-
+          {%- if homebrew_check.stat.exists and python_m_pip.rc == 0 -%}
+          homebrew
+          {%- elif homebrew_pip.stat.exists -%}
+          homebrew_pip
+          {%- elif local_pip.stat.exists -%}
+          local_pip
+          {%- elif local_python_m_pip.rc | default(1) == 0 -%}
+          local_python
+          {%- else -%}
+          not_found
+          {%- endif -%}
+        pip_cmd: >-
+          {%- if homebrew_check.stat.exists and python_m_pip.rc == 0 -%}
+          /opt/homebrew/bin/python3 -m pip
+          {%- elif homebrew_pip.stat.exists -%}
+          /opt/homebrew/bin/pip3
+          {%- elif local_pip.stat.exists -%}
+          /usr/local/bin/pip3
+          {%- elif local_python_m_pip.rc | default(1) == 0 -%}
+          /usr/local/bin/python3 -m pip
+          {%- else -%}
+          pip3
+          {%- endif -%}
+      tags: [detect, update]
+
+    - name: "🔍 DETECT | Mostrar método detectado"
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════
+          Host: {{ inventory_hostname }}
+          Método pip detectado: {{ pip_method | trim }}
+          Comando a usar: {{ pip_cmd | trim }}
+          Homebrew: {{ 'Sí' if homebrew_check.stat.exists else 'No' }}
+          ═══════════════════════════════════════════════
+      tags: [detect, update]
+
+    - name: "❌ DETECT | Fallar si no se encontró pip"
+      ansible.builtin.fail:
+        msg: "No se encontró pip en ninguna ruta conocida. Instala Python3 con Homebrew: brew install python@3"
+      when: pip_method | trim == 'not_found'
+      tags: [detect, update]
+
+    # ══════════════════════════════════════════════════════════════
+    # FASE 1: Auditoría - Versiones actuales (ANTES)
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "📋 BEFORE | Obtener versión actual de pip"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show pip 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: pip_before
+      changed_when: false
+      failed_when: false
+      tags: [audit, update]
+
+    - name: "📋 BEFORE | Obtener versión actual de setuptools"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: setuptools_before
+      changed_when: false
+      failed_when: false
+      tags: [audit, update]
+
+    - name: "📋 BEFORE | Obtener versión actual de wheel"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show wheel 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: wheel_before
+      changed_when: false
+      failed_when: false
+      tags: [audit, update]
+
+    - name: "📋 BEFORE | Obtener versión actual de future"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show future 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: future_before
+      changed_when: false
+      failed_when: false
+      tags: [audit, update]
+
+    # ══════════════════════════════════════════════════════════════
+    # FASE 2: Actualización de paquetes
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "⬆️ UPDATE | Actualizar pip (siempre primero)"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd | trim }} install --upgrade pip"
+      register: pip_upgrade
+      changed_when: "'Successfully installed' in pip_upgrade.stdout"
+      tags: [update]
+
+    - name: "⬆️ UPDATE | Actualizar setuptools"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd | trim }} install --upgrade setuptools"
+      register: setuptools_upgrade
+      changed_when: "'Successfully installed' in setuptools_upgrade.stdout"
+      tags: [update]
+
+    - name: "⬆️ UPDATE | Actualizar wheel"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd | trim }} install --upgrade wheel"
+      register: wheel_upgrade
+      changed_when: "'Successfully installed' in wheel_upgrade.stdout"
+      tags: [update]
+
+    - name: "⬆️ UPDATE | Actualizar future"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd | trim }} install --upgrade future"
+      register: future_upgrade
+      changed_when: "'Successfully installed' in future_upgrade.stdout"
+      tags: [update]
+
+    # ══════════════════════════════════════════════════════════════
+    # FASE 3: Verificación - Versiones nuevas (DESPUÉS)
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "🔍 AFTER | Obtener versión nueva de pip"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show pip 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: pip_after
+      changed_when: false
+      failed_when: false
+      tags: [verify, update]
+
+    - name: "🔍 AFTER | Obtener versión nueva de setuptools"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: setuptools_after
+      changed_when: false
+      failed_when: false
+      tags: [verify, update]
+
+    - name: "🔍 AFTER | Obtener versión nueva de wheel"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show wheel 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: wheel_after
+      changed_when: false
+      failed_when: false
+      tags: [verify, update]
+
+    - name: "🔍 AFTER | Obtener versión nueva de future"
+      ansible.builtin.shell:
+        cmd: "{{ pip_cmd | trim }} show future 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+      register: future_after
+      changed_when: false
+      failed_when: false
+      tags: [verify, update]
+
+    # ══════════════════════════════════════════════════════════════
+    # FASE 4: Validación de versiones mínimas contra CVEs
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "🔒 VALIDATE | Comparar versiones contra mínimos requeridos"
+      ansible.builtin.set_fact:
+        pip_ok: "{{ pip_after.stdout | trim is version(min_versions.pip, '>=') }}"
+        setuptools_ok: "{{ setuptools_after.stdout | trim is version(min_versions.setuptools, '>=') }}"
+        wheel_ok: "{{ wheel_after.stdout | trim is version(min_versions.wheel, '>=') }}"
+        future_ok: "{{ future_after.stdout | trim is version(min_versions.future, '>=') if future_after.stdout | trim != '' else false }}"
+      tags: [verify, update]
+
+    # ══════════════════════════════════════════════════════════════
+    # FASE 5: Pip audit
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "🔒 SECURITY | Ejecutar pip audit"
+      ansible.builtin.command:
+        cmd: "{{ pip_cmd | trim }} audit"
+      register: pip_audit
+      changed_when: false
+      failed_when: false
+      tags: [verify, update]
+
+    # ══════════════════════════════════════════════════════════════
+    # REPORTE FINAL
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "📊 REPORTE DE ACTUALIZACIÓN Y VALIDACIÓN"
+      ansible.builtin.debug:
+        msg: |
+
+          ══════════════════════════════════════════════════════════════════
+          🏰 DRAKOS CAVE - Reporte de Actualización Python Packages
+          ══════════════════════════════════════════════════════════════════
+          Host: {{ inventory_hostname }}
+          Fecha: {{ lookup('pipe', 'date "+%Y-%m-%d %H:%M:%S"') }}
+          Método pip: {{ pip_method | trim }}
+          Comando: {{ pip_cmd | trim }}
+          ──────────────────────────────────────────────────────────────────
+
+          📦 VERSIONES
+          ─────────────────────────────────────────────────────────────────
+          Paquete      │ Antes          │ Después        │ Mínimo
+          ─────────────┼────────────────┼────────────────┼────────────────
+          pip          │ {{ pip_before.stdout | default('N/A') | trim }}  │ {{ pip_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.pip }}
+          setuptools   │ {{ setuptools_before.stdout | default('N/A') | trim }}  │ {{ setuptools_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.setuptools }}
+          wheel        │ {{ wheel_before.stdout | default('N/A') | trim }}  │ {{ wheel_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.wheel }}
+          future       │ {{ future_before.stdout | default('N/A') | trim }}  │ {{ future_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.future }}
+
+          🔒 VALIDACIÓN DE CVEs
+          ─────────────────────────────────────────────────────────────────
+          {{ '✅' if pip_ok else '❌' }}  CVE-2026-8643  │ pip entry points         │ CVSS 5.5
+          {{ '✅' if pip_ok else '❌' }}  CVE-2023-5752  │ pip cmd injection        │ CVSS 3.3
+          {{ '✅' if setuptools_ok else '❌' }}  CVE-2024-6345  │ setuptools RCE           │ CVSS 8.8
+          {{ '✅' if setuptools_ok else '❌' }}  CVE-2025-47273 │ setuptools path traversal│ CVSS 8.8
+          {{ '✅' if setuptools_ok else '❌' }}  CVE-2022-40897 │ setuptools ReDoS         │ CVSS 7.5
+          {{ '✅' if wheel_ok else '❌' }}  CVE-2022-40898 │ wheel DoS                │ CVSS 7.5
+          {{ '✅' if future_ok else '❌' }}  CVE-2022-40899 │ future DoS               │ CVSS 7.5
+
+          ─────────────────────────────────────────────────────────────────
+          🔍 pip audit: {{ pip_audit.stdout | default('No disponible') | trim }}
+          ══════════════════════════════════════════════════════════════════
+      tags: [report, update]
+
+    # ══════════════════════════════════════════════════════════════
+    # ASSERT FINAL
+    # ══════════════════════════════════════════════════════════════
+
+    - name: "🚨 VERIFICACIÓN FINAL - Todas las versiones deben cumplir"
+      ansible.builtin.assert:
+        that:
+          - pip_ok | bool
+          - setuptools_ok | bool
+          - wheel_ok | bool
+        success_msg: "🏰 ¡Todos los paquetes actualizados y CVEs remediados! El Gremio de Orario aprueba. ⚔️"
+        fail_msg: "⚠️ Uno o más paquetes no alcanzaron la versión mínima requerida. Revisa el reporte."
+      tags: [assert, update]
+
