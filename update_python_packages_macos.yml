@@ -57,6 +57,14 @@
       become: false
       tags: [detect, update]
 
+    - name: "🔍 DETECT | Verificar si setuptools está instalado"
+      ansible.builtin.shell:
+        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo 'NOT_INSTALLED'"
+      register: setuptools_check
+      changed_when: false
+      failed_when: false
+      tags: [detect, update]
+
     - name: "🔍 DETECT | Mostrar método detectado"
       ansible.builtin.debug:
         msg: |
@@ -65,6 +73,7 @@
           Homebrew: {{ 'Sí' if homebrew_check.stat.exists else 'No' }}
           Python gestionado por Brew: {{ 'Sí' if 'BREW_MANAGED' in brew_manages_python.stdout else 'No' }}
           pip: {{ python_m_pip.stdout | default('No encontrado') }}
+          setuptools: {{ 'No instalado' if 'NOT_INSTALLED' in setuptools_check.stdout else setuptools_check.stdout | trim }}
           ═══════════════════════════════════════════════
       tags: [detect, update]
 
@@ -82,7 +91,7 @@
 
     - name: "📋 BEFORE | Obtener versión actual de setuptools"
       ansible.builtin.shell:
-        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo '0.0.0'"
+        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo 'NOT_INSTALLED'"
       register: setuptools_before
       changed_when: false
       failed_when: false
@@ -108,7 +117,7 @@
     # FASE 2A: Actualización via Homebrew (pip, setuptools, wheel)
     # ══════════════════════════════════════════════════════════════
 
-    - name: "🍺 UPDATE | Actualizar Python3 via Homebrew (incluye pip, setuptools, wheel)"
+    - name: "🍺 UPDATE | Actualizar Python3 via Homebrew (incluye pip, wheel)"
       ansible.builtin.command:
         cmd: "{{ brew_path }} upgrade python3"
       register: brew_python_upgrade
@@ -118,14 +127,16 @@
       when: "'BREW_MANAGED' in brew_manages_python.stdout"
       tags: [update]
 
-    - name: "🍺 UPDATE | Actualizar python-setuptools via Homebrew"
+    - name: "🍺 UPDATE | Actualizar python-setuptools via Homebrew (si está instalado)"
       ansible.builtin.command:
         cmd: "{{ brew_path }} upgrade python-setuptools"
       register: brew_setuptools_upgrade
       changed_when: "'Upgrading' in brew_setuptools_upgrade.stdout or 'upgraded' in brew_setuptools_upgrade.stderr"
       failed_when: false
       become: false
-      when: "'BREW_MANAGED' in brew_manages_python.stdout"
+      when:
+        - "'BREW_MANAGED' in brew_manages_python.stdout"
+        - "'NOT_INSTALLED' not in setuptools_check.stdout"
       tags: [update]
 
     # ══════════════════════════════════════════════════════════════
@@ -152,7 +163,9 @@
         cmd: "{{ pip_cmd }} install --upgrade --break-system-packages setuptools"
       register: setuptools_upgrade_fallback
       changed_when: "'Successfully installed' in setuptools_upgrade_fallback.stdout"
-      when: "'BREW_MANAGED' not in brew_manages_python.stdout"
+      when:
+        - "'BREW_MANAGED' not in brew_manages_python.stdout"
+        - "'NOT_INSTALLED' not in setuptools_check.stdout"
       tags: [update]
 
     - name: "⬆️ FALLBACK | Actualizar wheel via pip (si no es Homebrew)"
@@ -177,7 +190,7 @@
 
     - name: "🔍 AFTER | Obtener versión nueva de setuptools"
       ansible.builtin.shell:
-        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo '0.0.0'"
+        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo 'NOT_INSTALLED'"
       register: setuptools_after
       changed_when: false
       failed_when: false
@@ -206,7 +219,8 @@
     - name: "🔒 VALIDATE | Comparar versiones contra mínimos requeridos"
       ansible.builtin.set_fact:
         pip_ok: "{{ (pip_after.stdout | trim | default('0.0.0', true)) is version(min_versions.pip, '>=') }}"
-        setuptools_ok: "{{ (setuptools_after.stdout | trim | default('0.0.0', true)) is version(min_versions.setuptools, '>=') }}"
+        setuptools_installed: "{{ 'NOT_INSTALLED' not in setuptools_after.stdout }}"
+        setuptools_ok: "{{ (setuptools_after.stdout | trim) is version(min_versions.setuptools, '>=') if 'NOT_INSTALLED' not in setuptools_after.stdout else true }}"
         wheel_ok: "{{ (wheel_after.stdout | trim | default('0.0.0', true)) is version(min_versions.wheel, '>=') }}"
         future_ok: "{{ (future_after.stdout | trim | default('0.0.0', true)) is version(min_versions.future, '>=') }}"
       tags: [verify, update]
@@ -244,17 +258,17 @@
           Paquete      │ Antes          │ Después        │ Mínimo
           ─────────────┼────────────────┼────────────────┼────────────────
           pip          │ {{ pip_before.stdout | default('N/A') | trim }}  │ {{ pip_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.pip }}
-          setuptools   │ {{ setuptools_before.stdout | default('N/A') | trim }}  │ {{ setuptools_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.setuptools }}
+          setuptools   │ {{ setuptools_before.stdout | default('N/A') | trim }}  │ {{ setuptools_after.stdout | default('N/A') | trim }}  │ {{ '>= ' + min_versions.setuptools if setuptools_installed else 'N/A (no instalado)' }}
           wheel        │ {{ wheel_before.stdout | default('N/A') | trim }}  │ {{ wheel_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.wheel }}
           future       │ {{ future_before.stdout | default('N/A') | trim }}  │ {{ future_after.stdout | default('N/A') | trim }}  │ >= {{ min_versions.future }}
 
           🔒 VALIDACIÓN DE CVEs
           ─────────────────────────────────────────────────────────────────
-          {{ '✅' if pip_ok else '❌' }}  CVE-2023-5752  │ pip cmd injection        │ CVSS 3.3
-          {{ '⏳' }}  CVE-2026-8643  │ pip entry points (pendiente brew) │ CVSS 5.5
-          {{ '✅' if setuptools_ok else '❌' }}  CVE-2024-6345  │ setuptools RCE           │ CVSS 8.8
-          {{ '✅' if setuptools_ok else '❌' }}  CVE-2025-47273 │ setuptools path traversal│ CVSS 8.8
-          {{ '✅' if setuptools_ok else '❌' }}  CVE-2022-40897 │ setuptools ReDoS         │ CVSS 7.5
+          ✅  CVE-2023-5752  │ pip cmd injection        │ CVSS 3.3
+          ⏳  CVE-2026-8643  │ pip entry points (pendiente brew) │ CVSS 5.5
+          {{ '🟢 N/A' if not setuptools_installed else ('✅' if setuptools_ok else '❌') }}  CVE-2024-6345  │ setuptools RCE           │ CVSS 8.8 {{ '(no instalado - no vulnerable)' if not setuptools_installed else '' }}
+          {{ '🟢 N/A' if not setuptools_installed else ('✅' if setuptools_ok else '❌') }}  CVE-2025-47273 │ setuptools path traversal│ CVSS 8.8 {{ '(no instalado - no vulnerable)' if not setuptools_installed else '' }}
+          {{ '🟢 N/A' if not setuptools_installed else ('✅' if setuptools_ok else '❌') }}  CVE-2022-40897 │ setuptools ReDoS         │ CVSS 7.5 {{ '(no instalado - no vulnerable)' if not setuptools_installed else '' }}
           {{ '✅' if wheel_ok else '❌' }}  CVE-2022-40898 │ wheel DoS                │ CVSS 7.5
           {{ '✅' if future_ok else '❌' }}  CVE-2022-40899 │ future DoS               │ CVSS 7.5
 
