@@ -1,0 +1,246 @@
+---
+# ══════════════════════════════════════════════════════════════════
+# 🏰 Drakos Cave - Playbook de Validación CIS macOS Tahoe 26.5.1
+# Verifica que los 8 controles CIS seguros están correctamente
+# aplicados en equipos Apple Silicon M2
+# ══════════════════════════════════════════════════════════════════
+
+- name: "🛡️ CIS macOS Tahoe 26.5.1 - Validación de Controles"
+  hosts: macos_targets
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    # ──────────────────────────────────────────────────────────────
+    # 1. CIS 2.9.1 - Help Apple Improve Search (esperado: 2)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 2.9.1 | CHECK - Help Apple Improve Search"
+      ansible.builtin.command:
+        cmd: >
+          osascript -l JavaScript -e
+          "$.NSUserDefaults.alloc.initWithSuiteName('com.apple.assistant.support').objectForKey('Search Queries Data Sharing Status')"
+      register: cis_2_9_1
+      changed_when: false
+      failed_when: false
+      tags: [cis_2.9.1, privacy, validate]
+
+    - name: "CIS 2.9.1 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_2_9_1_status: "{{ '✅ PASS' if cis_2_9_1.stdout | trim == '2' else '❌ FAIL' }}"
+        cis_2_9_1_detail: "Valor actual: {{ cis_2_9_1.stdout | trim }} (esperado: 2)"
+      tags: [cis_2.9.1, privacy, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 2. CIS 2.11.5 - Password Hints (esperado: 0)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 2.11.5 | CHECK - Password Hints"
+      ansible.builtin.command:
+        cmd: >
+          osascript -l JavaScript -e
+          "$.NSUserDefaults.alloc.initWithSuiteName('com.apple.loginwindow').objectForKey('RetriesUntilHint')"
+      register: cis_2_11_5
+      changed_when: false
+      failed_when: false
+      tags: [cis_2.11.5, authentication, validate]
+
+    - name: "CIS 2.11.5 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_2_11_5_status: "{{ '✅ PASS' if cis_2_11_5.stdout | trim == '0' else '❌ FAIL' }}"
+        cis_2_11_5_detail: "Valor actual: {{ cis_2_11_5.stdout | trim }} (esperado: 0)"
+      tags: [cis_2.11.5, authentication, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 3. CIS 2.18.1 - On-Device Dictation (esperado: true o 1)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 2.18.1 | CHECK - On-Device Dictation"
+      ansible.builtin.command:
+        cmd: >
+          osascript -l JavaScript -e
+          "$.NSUserDefaults.alloc.initWithSuiteName('com.apple.applicationaccess').objectForKey('forceOnDeviceOnlyDictation')"
+      register: cis_2_18_1
+      changed_when: false
+      failed_when: false
+      tags: [cis_2.18.1, privacy, validate]
+
+    - name: "CIS 2.18.1 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_2_18_1_status: "{{ '✅ PASS' if cis_2_18_1.stdout | trim in ['true', '1'] else '❌ FAIL' }}"
+        cis_2_18_1_detail: "Valor actual: {{ cis_2_18_1.stdout | trim }} (esperado: true o 1)"
+      tags: [cis_2.18.1, privacy, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 4. CIS 3.3 - install.log retention (ttl=365, sin all_max)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 3.3 | CHECK - install.log ttl"
+      ansible.builtin.shell:
+        cmd: "grep -c 'ttl=365' /etc/asl/com.apple.install || echo 0"
+      register: cis_3_3_ttl
+      changed_when: false
+      failed_when: false
+      tags: [cis_3.3, logging, validate]
+
+    - name: "CIS 3.3 | CHECK - install.log all_max"
+      ansible.builtin.shell:
+        cmd: "grep -c 'all_max=' /etc/asl/com.apple.install || echo 0"
+      register: cis_3_3_allmax
+      changed_when: false
+      failed_when: false
+      tags: [cis_3.3, logging, validate]
+
+    - name: "CIS 3.3 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_3_3_status: "{{ '✅ PASS' if (cis_3_3_ttl.stdout | trim | int > 0) and (cis_3_3_allmax.stdout | trim | int == 0) else '❌ FAIL' }}"
+        cis_3_3_detail: "ttl=365 presente: {{ 'Sí' if cis_3_3_ttl.stdout | trim | int > 0 else 'No' }} | all_max ausente: {{ 'Sí' if cis_3_3_allmax.stdout | trim | int == 0 else 'No' }}"
+      tags: [cis_3.3, logging, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 5. CIS 4.1 - Bonjour Advertising (esperado: 1)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 4.1 | CHECK - Bonjour Advertising"
+      ansible.builtin.command:
+        cmd: >
+          osascript -l JavaScript -e
+          "$.NSUserDefaults.alloc.initWithSuiteName('com.apple.mDNSResponder').objectForKey('NoMulticastAdvertisements')"
+      register: cis_4_1
+      changed_when: false
+      failed_when: false
+      tags: [cis_4.1, network, validate]
+
+    - name: "CIS 4.1 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_4_1_status: "{{ '✅ PASS' if cis_4_1.stdout | trim in ['1', 'true'] else '❌ FAIL' }}"
+        cis_4_1_detail: "Valor actual: {{ cis_4_1.stdout | trim }} (esperado: 1)"
+      tags: [cis_4.1, network, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 6. CIS 4.3 - NFS Server (disabled + sin /etc/exports)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 4.3 | CHECK - NFS status"
+      ansible.builtin.command:
+        cmd: nfsd status
+      register: cis_4_3_nfsd
+      changed_when: false
+      failed_when: false
+      tags: [cis_4.3, services, validate]
+
+    - name: "CIS 4.3 | CHECK - /etc/exports exists"
+      ansible.builtin.stat:
+        path: /etc/exports
+      register: cis_4_3_exports
+      tags: [cis_4.3, services, validate]
+
+    - name: "CIS 4.3 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_4_3_status: "{{ '✅ PASS' if ('disabled' in cis_4_3_nfsd.stdout | default('') or 'disabled' in cis_4_3_nfsd.stderr | default('')) and not cis_4_3_exports.stat.exists else '❌ FAIL' }}"
+        cis_4_3_detail: "NFS: {{ cis_4_3_nfsd.stdout | default(cis_4_3_nfsd.stderr) | trim }} | /etc/exports: {{ 'No existe ✓' if not cis_4_3_exports.stat.exists else 'Existe ✗' }}"
+      tags: [cis_4.3, services, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 7. CIS 5.8 - Login Window Banner (archivo debe existir)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 5.8 | CHECK - PolicyBanner exists"
+      ansible.builtin.stat:
+        path: /Library/Security/PolicyBanner.txt
+      register: cis_5_8_banner
+      tags: [cis_5.8, access_warning, validate]
+
+    - name: "CIS 5.8 | CHECK - PolicyBanner permissions"
+      ansible.builtin.shell:
+        cmd: "stat -f '%A' /Library/Security/PolicyBanner.txt 2>/dev/null || echo 'N/A'"
+      register: cis_5_8_perms
+      changed_when: false
+      failed_when: false
+      tags: [cis_5.8, access_warning, validate]
+
+    - name: "CIS 5.8 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_5_8_status: "{{ '✅ PASS' if cis_5_8_banner.stat.exists else '❌ FAIL' }}"
+        cis_5_8_detail: "Archivo existe: {{ 'Sí' if cis_5_8_banner.stat.exists else 'No' }} | Permisos: {{ cis_5_8_perms.stdout | trim }}"
+      tags: [cis_5.8, access_warning, validate]
+
+    # ──────────────────────────────────────────────────────────────
+    # 8. CIS 5.11 - Sudo Logging (Defaults log_allowed)
+    # ──────────────────────────────────────────────────────────────
+    - name: "CIS 5.11 | CHECK - Sudo logging config"
+      ansible.builtin.shell:
+        cmd: "grep -c 'Defaults log_allowed' /etc/sudoers.d/10_cis_sudo_logging 2>/dev/null || echo 0"
+      register: cis_5_11
+      changed_when: false
+      failed_when: false
+      tags: [cis_5.11, sudo, validate]
+
+    - name: "CIS 5.11 | CHECK - Sudo logging file permissions"
+      ansible.builtin.shell:
+        cmd: "stat -f '%A' /etc/sudoers.d/10_cis_sudo_logging 2>/dev/null || echo 'N/A'"
+      register: cis_5_11_perms
+      changed_when: false
+      failed_when: false
+      tags: [cis_5.11, sudo, validate]
+
+    - name: "CIS 5.11 | EVALUATE"
+      ansible.builtin.set_fact:
+        cis_5_11_status: "{{ '✅ PASS' if cis_5_11.stdout | trim | int > 0 else '❌ FAIL' }}"
+        cis_5_11_detail: "log_allowed presente: {{ 'Sí' if cis_5_11.stdout | trim | int > 0 else 'No' }} | Permisos: {{ cis_5_11_perms.stdout | trim }} (esperado: 440)"
+      tags: [cis_5.11, sudo, validate]
+
+    # ══════════════════════════════════════════════════════════════
+    # REPORTE FINAL
+    # ══════════════════════════════════════════════════════════════
+    - name: "📊 REPORTE DE CUMPLIMIENTO CIS"
+      ansible.builtin.debug:
+        msg: |
+
+          ══════════════════════════════════════════════════════════════════
+          🏰 DRAKOS CAVE - Reporte de Validación CIS macOS Tahoe 26.5.1
+          ══════════════════════════════════════════════════════════════════
+          Host: {{ inventory_hostname }}
+          Fecha: {{ lookup('pipe', 'date "+%Y-%m-%d %H:%M:%S"') }}
+          ──────────────────────────────────────────────────────────────────
+
+          {{ cis_2_9_1_status }}  CIS 2.9.1  │ Help Apple Improve Search
+                                  {{ cis_2_9_1_detail }}
+
+          {{ cis_2_11_5_status }}  CIS 2.11.5 │ Password Hints
+                                  {{ cis_2_11_5_detail }}
+
+          {{ cis_2_18_1_status }}  CIS 2.18.1 │ On-Device Dictation
+                                  {{ cis_2_18_1_detail }}
+
+          {{ cis_3_3_status }}  CIS 3.3    │ install.log Retention
+                                  {{ cis_3_3_detail }}
+
+          {{ cis_4_1_status }}  CIS 4.1    │ Bonjour Advertising
+                                  {{ cis_4_1_detail }}
+
+          {{ cis_4_3_status }}  CIS 4.3    │ NFS Server
+                                  {{ cis_4_3_detail }}
+
+          {{ cis_5_8_status }}  CIS 5.8    │ Login Window Banner
+                                  {{ cis_5_8_detail }}
+
+          {{ cis_5_11_status }}  CIS 5.11   │ Sudo Logging
+                                  {{ cis_5_11_detail }}
+
+          ──────────────────────────────────────────────────────────────────
+          Total controles: 8
+          ══════════════════════════════════════════════════════════════════
+      tags: [report, validate]
+
+    # ══════════════════════════════════════════════════════════════
+    # ASSERT FINAL (falla el playbook si algún control no pasó)
+    # ══════════════════════════════════════════════════════════════
+    - name: "🚨 VERIFICACIÓN FINAL - Todos los controles deben pasar"
+      ansible.builtin.assert:
+        that:
+          - cis_2_9_1_status is search('PASS')
+          - cis_2_11_5_status is search('PASS')
+          - cis_2_18_1_status is search('PASS')
+          - cis_3_3_status is search('PASS')
+          - cis_4_1_status is search('PASS')
+          - cis_4_3_status is search('PASS')
+          - cis_5_8_status is search('PASS')
+          - cis_5_11_status is search('PASS')
+        success_msg: "🏰 ¡Todos los 8 controles CIS pasaron! El Gremio de Orario aprueba este equipo. ⚔️"
+        fail_msg: "⚠️ Uno o más controles CIS fallaron. Revisa el reporte arriba y re-ejecuta el playbook de remediación."
+      tags: [assert, validate]
