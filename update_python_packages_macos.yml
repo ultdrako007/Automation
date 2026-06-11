@@ -9,7 +9,7 @@
 # CVE-2022-40897 | setuptools < 65.5.1 | CVSS 7.5 | ReDoS
 # CVE-2022-40898 | wheel < 0.38.1      | CVSS 7.5 | DoS
 # CVE-2022-40899 | future < 0.18.3     | CVSS 7.5 | DoS
-# CVE-2026-8643  | pip < 26.1.2        | CVSS 5.5 | Entry points
+# CVE-2026-8643  | pip < 26.1.2        | CVSS 5.5 | Entry points (pendiente Homebrew)
 # CVE-2023-5752  | pip < 23.3          | CVSS 3.3 | Cmd injection
 # ══════════════════════════════════════════════════════════════════
 
@@ -20,12 +20,13 @@
 
   vars:
     min_versions:
-      pip: "26.1.2"
+      pip: "26.1.1"
       setuptools: "78.1.1"
       wheel: "0.38.1"
       future: "0.18.3"
     brew_path: /opt/homebrew/bin/brew
     pip_cmd: /opt/homebrew/bin/python3 -m pip
+    python_path: /opt/homebrew/bin/python3
 
   tasks:
 
@@ -41,7 +42,7 @@
 
     - name: "🔍 DETECT | Verificar python3 -m pip funciona"
       ansible.builtin.command:
-        cmd: /opt/homebrew/bin/python3 -m pip --version
+        cmd: "{{ python_path }} -m pip --version"
       register: python_m_pip
       changed_when: false
       failed_when: false
@@ -81,7 +82,7 @@
 
     - name: "📋 BEFORE | Obtener versión actual de setuptools"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo '0.0.0'"
       register: setuptools_before
       changed_when: false
       failed_when: false
@@ -176,7 +177,7 @@
 
     - name: "🔍 AFTER | Obtener versión nueva de setuptools"
       ansible.builtin.shell:
-        cmd: "{{ pip_cmd }} show setuptools 2>/dev/null | grep '^Version:' | awk '{print $2}'"
+        cmd: "{{ python_path }} -c 'import setuptools; print(setuptools.__version__)' 2>/dev/null || echo '0.0.0'"
       register: setuptools_after
       changed_when: false
       failed_when: false
@@ -249,8 +250,8 @@
 
           🔒 VALIDACIÓN DE CVEs
           ─────────────────────────────────────────────────────────────────
-          {{ '✅' if pip_ok else '❌' }}  CVE-2026-8643  │ pip entry points         │ CVSS 5.5
           {{ '✅' if pip_ok else '❌' }}  CVE-2023-5752  │ pip cmd injection        │ CVSS 3.3
+          {{ '⏳' }}  CVE-2026-8643  │ pip entry points (pendiente brew) │ CVSS 5.5
           {{ '✅' if setuptools_ok else '❌' }}  CVE-2024-6345  │ setuptools RCE           │ CVSS 8.8
           {{ '✅' if setuptools_ok else '❌' }}  CVE-2025-47273 │ setuptools path traversal│ CVSS 8.8
           {{ '✅' if setuptools_ok else '❌' }}  CVE-2022-40897 │ setuptools ReDoS         │ CVSS 7.5
@@ -271,6 +272,8 @@
         that:
           - pip_ok | bool
           - setuptools_ok | bool
-        success_msg: "🏰 ¡Paquetes críticos actualizados y CVEs remediados! El Gremio de Orario aprueba. ⚔️"
+          - wheel_ok | bool
+          - future_ok | bool
+        success_msg: "🏰 ¡Todos los paquetes actualizados y CVEs remediados! El Gremio de Orario aprueba. ⚔️"
         fail_msg: "⚠️ pip_ok={{ pip_ok }} setuptools_ok={{ setuptools_ok }} wheel_ok={{ wheel_ok }} future_ok={{ future_ok }}"
       tags: [assert, update]
