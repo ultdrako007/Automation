@@ -1,0 +1,62 @@
+---
+# ============================================================================
+# Drakos Cave SOC - SSH PostQuantum Hardening Windows
+# Fecha: 2026-06-22
+# OpenSSH for Windows 9.5 (sntrup761 disponible, mlkem768 NO)
+# ============================================================================
+- name: SSH PostQuantum Hardening Windows - Drakos SOC
+  hosts: windows
+  gather_facts: yes
+  serial: 5
+
+  vars:
+    sshd_dropin_path: 'C:\ProgramData\ssh\sshd_config.d\99-drakos-postquantum.conf'
+
+  tasks:
+    - name: "[1/5] Verificar versión OpenSSH"
+      ansible.windows.win_powershell:
+        script: |
+          (ssh -V 2>&1) -join ''
+      register: ssh_version
+
+    - name: "[2/5] Crear directorio sshd_config.d si no existe"
+      ansible.windows.win_file:
+        path: 'C:\ProgramData\ssh\sshd_config.d'
+        state: directory
+
+    - name: "[3/5] Aplicar drop-in PostQuantum"
+      ansible.windows.win_copy:
+        content: |
+          # ====================================================================
+          # Drakos Cave SOC - Post-Quantum KEX hardening
+          # Aplicado: 2026-06-22 via Ansible (hardssh_windows.yml)
+          # OpenSSH for Windows 9.5 (sntrup761 disponible, mlkem768 NO)
+          # ====================================================================
+          KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+        dest: "{{ sshd_dropin_path }}"
+        force: yes
+      register: dropin_apply
+
+    - name: "[4/5] Restart sshd para aplicar PostQuantum"
+      ansible.windows.win_service:
+        name: sshd
+        state: restarted
+      when: dropin_apply.changed
+
+    - name: "[5/5] Validar KexAlgorithms efectivos"
+      ansible.windows.win_powershell:
+        script: |
+          $sshdT = & 'C:\Windows\System32\OpenSSH\sshd.exe' -T 2>$null
+          $kex = $sshdT | Select-String -Pattern '^kexalgorithms'
+          @{
+            Host        = $env:COMPUTERNAME
+            OpenSSH_Ver = (ssh -V 2>&1) -join ''
+            DropIn      = Test-Path '{{ sshd_dropin_path }}'
+            KexActive   = if ($kex) { $kex.Line } else { 'N/A' }
+            SshdStatus  = (Get-Service sshd).Status.ToString()
+          }
+      register: kex_validation
+
+    - name: "Reporte PostQuantum por host"
+      ansible.builtin.debug:
+        var: kex_validation.output

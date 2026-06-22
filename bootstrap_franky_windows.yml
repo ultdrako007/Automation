@@ -1,0 +1,91 @@
+---
+# ============================================================================
+# Drakos Cave SOC - Bootstrap franky en Windows Server 2025
+# Fecha: 2026-06-22
+# Hosts: 10 Windows (8 ultdrako + 1 Administrator + 2 nuevos)
+# Tareas:
+#   1. Crear usuario local franky con admin rights
+#   2. Configurar SSH key authorization para franky
+#   3. Actualizar sshd_config con AllowUsers ultdrako franky
+#   4. Restart sshd
+# ============================================================================
+- name: Bootstrap franky Windows - Drakos SOC
+  hosts: windows
+  gather_facts: yes
+  serial: 5
+
+  vars:
+    franky_user: franky
+    franky_password: 'DrakosTemp2026!Franky'
+    franky_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICl/ddd0HOczgqAhJzuZ57v7hjcH+mkMMKdV4TBURsNg franky@semaphore-drakos-2026-06-22"
+
+  tasks:
+    - name: "[1/7] Crear usuario local franky"
+      ansible.windows.win_user:
+        name: "{{ franky_user }}"
+        password: "{{ franky_password }}"
+        password_never_expires: yes
+        account_disabled: no
+        groups:
+          - Administrators
+          - Users
+        groups_action: add
+        state: present
+
+    - name: "[2/7] Crear directorio C:\\Users\\franky\\.ssh"
+      ansible.windows.win_file:
+        path: 'C:\Users\{{ franky_user }}\.ssh'
+        state: directory
+
+    - name: "[3/7] Instalar franky_drakos.pub en authorized_keys"
+      ansible.windows.win_copy:
+        content: "{{ franky_pubkey }}\n"
+        dest: 'C:\Users\{{ franky_user }}\.ssh\authorized_keys'
+        force: yes
+
+    - name: "[4/7] Configurar permisos NTFS en authorized_keys"
+      ansible.windows.win_powershell:
+        script: |
+          $path = 'C:\Users\{{ franky_user }}\.ssh\authorized_keys'
+          icacls $path /inheritance:r 2>&1 | Out-Null
+          icacls $path /grant:r "{{ franky_user }}:F" 2>&1 | Out-Null
+          icacls $path /grant:r "SYSTEM:F" 2>&1 | Out-Null
+          icacls $path /grant:r "Administrators:F" 2>&1 | Out-Null
+          'OK'
+
+    - name: "[5/7] Actualizar sshd_config: agregar franky a AllowUsers"
+      ansible.windows.win_powershell:
+        script: |
+          $configPath = 'C:\ProgramData\ssh\sshd_config'
+          $content = Get-Content $configPath
+          $newContent = $content -replace '^AllowUsers ultdrako$', 'AllowUsers ultdrako franky'
+          if ($newContent -join "`n" -ne $content -join "`n") {
+            $newContent | Out-File -FilePath $configPath -Encoding ASCII -Force
+            'UPDATED'
+          } else {
+            'NO_CHANGE_NEEDED'
+          }
+      register: sshd_update
+
+    - name: "[6/7] Restart sshd service"
+      ansible.windows.win_service:
+        name: sshd
+        state: restarted
+      when: sshd_update.output[0] == 'UPDATED'
+
+    - name: "[7/7] Validación final"
+      ansible.windows.win_powershell:
+        script: |
+          @{
+            Host                = $env:COMPUTERNAME
+            FrankyExists        = (Get-LocalUser franky -ErrorAction SilentlyContinue).Enabled
+            FrankyInAdmins      = (Get-LocalGroupMember Administrators | Where-Object {$_.Name -like '*franky*'}).Count -gt 0
+            AuthorizedKeysSize  = (Get-Item 'C:\Users\franky\.ssh\authorized_keys' -ErrorAction SilentlyContinue).Length
+            AllowUsersConfig    = (Select-String -Path 'C:\ProgramData\ssh\sshd_config' -Pattern 'AllowUsers').Line
+            SshdStatus          = (Get-Service sshd).Status.ToString()
+          }
+      register: validation
+
+    - name: "Reporte por host"
+      ansible.builtin.debug:
+        var: validation.output
