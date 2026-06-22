@@ -16,7 +16,7 @@
 
   vars:
     franky_user: franky
-    franky_password: 'DrakosTemp2026!Franky'
+    franky_password: '0u3r%MbrGCXBWbWYs0@*cE**JEFvsTr!'
     franky_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICl/ddd0HOczgqAhJzuZ57v7hjcH+mkMMKdV4TBURsNg franky@semaphore-drakos-2026-06-22"
 
   tasks:
