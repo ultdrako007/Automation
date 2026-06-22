@@ -1,12 +1,13 @@
 ---
 # ====================================================================
-# Drakos Cave SOC - SSH PostQuantum Hardening
+# Drakos Cave SOC - SSH PostQuantum Hardening v3
 # Repo: https://github.com/ultdrako007/Automation
-# Aplicable a: hosts Debian 13 / Ubuntu 24.04 con OpenSSH 10.0+
-# Usuario de ejecución: franky (NOPASSWD ALL via bootstrap_franky.yml)
-# Versión: 2 (2026-06-22) - Fix validate %s
+# Adapta KexAlgorithms según versión de OpenSSH:
+#   - OpenSSH 10.0+ → mlkem768x25519-sha256 (NIST ML-KEM) prioritario
+#   - OpenSSH 9.0-9.9 → sntrup761x25519-sha512 (PQ legacy) prioritario
+# Versión: 3 (2026-06-22) - Soporte mixed Debian 13 / Ubuntu 24.04
 # ====================================================================
-- name: SSH PostQuantum Hardening - Drakos SOC
+- name: SSH PostQuantum Hardening - Drakos SOC v3
   hosts: all
   become: yes
   gather_facts: yes
@@ -14,37 +15,43 @@
 
   vars:
     sshd_dropin_path: /etc/ssh/sshd_config.d/99-drakos-postquantum.conf
-    sshd_dropin_content: |
-      # ====================================================================
-      # Drakos Cave SOC - Post-Quantum KEX hardening
-      # Aplicado: {{ ansible_date_time.date }} via Semaphore
-      # Algoritmos PQ híbridos (post-cuánticos + clásicos):
-      #   - mlkem768x25519-sha256  (NIST ML-KEM, default OpenSSH 10.0+)
-      #   - sntrup761x25519-sha512 (Streamlined NTRU Prime, OpenSSH 8.5+)
-      # Justificación: mitigación "harvest now, decrypt later"
-      # ====================================================================
-      KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
 
   tasks:
-    - name: "[1/7] Verificar versión OpenSSH"
+    - name: "[1/8] Verificar versión OpenSSH"
       ansible.builtin.command: ssh -V
       register: ssh_version
       changed_when: false
 
-    - name: "[2/7] Validar que soporta PostQuantum (OpenSSH 9.0+)"
+    - name: "[2/8] Validar que soporta PostQuantum (OpenSSH 9.0+)"
       ansible.builtin.assert:
         that:
           - "'OpenSSH_9' in ssh_version.stderr or 'OpenSSH_10' in ssh_version.stderr or 'OpenSSH_11' in ssh_version.stderr"
-        fail_msg: "OpenSSH muy antiguo en {{ inventory_hostname }} para soportar PostQuantum: {{ ssh_version.stderr }}"
+        fail_msg: "OpenSSH muy antiguo en {{ inventory_hostname }}: {{ ssh_version.stderr }}"
         success_msg: "OpenSSH compatible: {{ ssh_version.stderr }}"
 
-    - name: "[3/7] Verificar que mlkem768x25519-sha256 está disponible"
-      ansible.builtin.shell: ssh -Q kex | grep -E 'mlkem768x25519-sha256'
-      register: kex_available
+    - name: "[3/8] Listar algoritmos KEX disponibles"
+      ansible.builtin.command: ssh -Q kex
+      register: kex_list
       changed_when: false
-      failed_when: kex_available.rc != 0
 
-    - name: "[4/7] Backup de sshd_config (idempotente)"
+    - name: "[4/8] Detectar mejor algoritmo PostQuantum disponible"
+      ansible.builtin.set_fact:
+        has_mlkem: "{{ 'mlkem768x25519-sha256' in kex_list.stdout }}"
+        has_sntrup: "{{ 'sntrup761x25519-sha512' in kex_list.stdout }}"
+
+    - name: "[5/8] Construir KexAlgorithms según disponibilidad"
+      ansible.builtin.set_fact:
+        kex_algorithms: >-
+          {%- set algos = [] -%}
+          {%- if has_mlkem -%}{%- set _ = algos.append('mlkem768x25519-sha256') -%}{%- endif -%}
+          {%- if has_sntrup -%}{%- set _ = algos.append('sntrup761x25519-sha512@openssh.com') -%}{%- endif -%}
+          {%- set _ = algos.append('curve25519-sha256') -%}
+          {%- set _ = algos.append('curve25519-sha256@libssh.org') -%}
+          {%- set _ = algos.append('diffie-hellman-group16-sha512') -%}
+          {%- set _ = algos.append('diffie-hellman-group18-sha512') -%}
+          {{ algos | join(',') }}
+
+    - name: "[6/8] Backup de sshd_config (idempotente)"
       ansible.builtin.copy:
         src: /etc/ssh/sshd_config
         dest: "/etc/ssh/sshd_config.bak_{{ ansible_date_time.date }}_drakos"
@@ -54,24 +61,33 @@
         group: root
         mode: '0600'
 
-    - name: "[5/7] Aplicar drop-in PostQuantum"
+    - name: "[7/8] Aplicar drop-in PostQuantum"
       ansible.builtin.copy:
         dest: "{{ sshd_dropin_path }}"
-        content: "{{ sshd_dropin_content }}"
+        content: |
+          # ====================================================================
+          # Drakos Cave SOC - Post-Quantum KEX hardening
+          # Aplicado: {{ ansible_date_time.date }} via Semaphore
+          # OpenSSH detectado: {{ ssh_version.stderr }}
+          # mlkem768 disponible: {{ has_mlkem }}
+          # sntrup761 disponible: {{ has_sntrup }}
+          # Justificación: mitigación "harvest now, decrypt later"
+          # ====================================================================
+          KexAlgorithms {{ kex_algorithms }}
         owner: root
         group: root
         mode: '0644'
         validate: '/usr/sbin/sshd -t -f %s'
       register: sshd_dropin
 
-    - name: "[6/7] Reload SSH service (solo si cambió)"
+    - name: "[8/8] Reload SSH service (solo si cambió)"
       ansible.builtin.systemd:
         name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
         state: reloaded
       when: sshd_dropin.changed
 
-    - name: "[7/7] Validar KexAlgorithms efectivos post-aplicación"
-      ansible.builtin.shell: sshd -T 2>/dev/null | grep -i kexalgorithms
+    - name: "Validar KexAlgorithms efectivos post-aplicación"
+      ansible.builtin.shell: sshd -T 2>/dev/null | grep -i '^kexalgorithms'
       register: kex_check
       changed_when: false
 
@@ -80,8 +96,9 @@
         msg:
           - "════════════════════════════════════════"
           - "Host: {{ inventory_hostname }}"
-          - "OpenSSH: {{ ssh_version.stderr }}"
           - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "OpenSSH: {{ ssh_version.stderr }}"
+          - "Algoritmo PQ usado: {{ 'mlkem768 (NIST)' if has_mlkem else ('sntrup761 (legacy)' if has_sntrup else 'NINGUNO') }}"
           - "Drop-in: {{ sshd_dropin_path }} ({{ 'APLICADO' if sshd_dropin.changed else 'sin cambios' }})"
-          - "KEX activos: {{ kex_check.stdout }}"
+          - "KEX: {{ kex_check.stdout }}"
           - "════════════════════════════════════════"
