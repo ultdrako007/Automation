@@ -1,33 +1,67 @@
-# 1. Verificar versión OpenSSH y soporte PQ
-ssh -V
-ssh -Q kex | grep -E 'mlkem|sntrup'
+---
+- name: SSH PostQuantum Hardening - Drakos SOC
+  hosts: all
+  become: yes
+  gather_facts: yes
+  serial: 5
 
-# 2. Si NO soporta PQ → actualizar primero
-# sudo apt update && sudo apt install -y openssh-server
+  vars:
+    sshd_dropin_path: /etc/ssh/sshd_config.d/99-drakos-postquantum.conf
+    sshd_dropin_content: |
+      # ====================================================================
+      # Drakos Cave SOC - Post-Quantum KEX hardening
+      # Aplicado: {{ ansible_date_time.date }} via Semaphore (bootstrap)
+      # Algoritmos PQ híbridos (post-cuánticos + clásicos):
+      #   - mlkem768x25519-sha256  (NIST ML-KEM, default OpenSSH 10.0+)
+      #   - sntrup761x25519-sha512 (Streamlined NTRU Prime, OpenSSH 8.5+)
+      # ====================================================================
+      KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
 
-# 3. Backup
-sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak_$(date +%Y%m%d_%H%M%S)
+  tasks:
+    - name: "[1/6] Verificar versión OpenSSH"
+      ansible.builtin.command: ssh -V
+      register: ssh_version
+      changed_when: false
 
-# 4. Aplicar drop-in
-sudo tee /etc/ssh/sshd_config.d/99-drakos-postquantum.conf > /dev/null <<'EOF'
-# ====================================================================
-# Drakos Cave SOC — Post-Quantum KEX hardening
-# Aplicado: 2026-06-22 (Rev 44 patch 2)
-# Justificación: Mitigación "harvest now, decrypt later" (OpenSSH 10.1+)
-# Servidor piloto exitoso: misp.drakos.local
-# ====================================================================
-KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
-EOF
+    - name: "[2/6] Mostrar versión OpenSSH"
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ ssh_version.stderr }}"
 
-# 5. Validar sintaxis
-sudo sshd -t
+    - name: "[3/6] Backup de sshd_config (idempotente)"
+      ansible.builtin.copy:
+        src: /etc/ssh/sshd_config
+        dest: "/etc/ssh/sshd_config.bak_{{ ansible_date_time.date }}_drakos"
+        remote_src: yes
+        force: no
+        owner: root
+        group: root
+        mode: '0600'
 
-# 6. Reload (no cierra sesiones activas)
-sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd
+    - name: "[4/6] Aplicar drop-in PostQuantum"
+      ansible.builtin.copy:
+        dest: "{{ sshd_dropin_path }}"
+        content: "{{ sshd_dropin_content }}"
+        owner: root
+        group: root
+        mode: '0644'
+        validate: '/usr/sbin/sshd -t -f /dev/stdin'
+      register: sshd_dropin
 
-# 7. Confirmar
-sudo systemctl status ssh --no-pager | head -10
-sudo sshd -T | grep -i kexalgorithms
+    - name: "[5/6] Reload SSH service (solo si cambió)"
+      ansible.builtin.systemd:
+        name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+        state: reloaded
+      when: sshd_dropin.changed
 
-# 8. Test desde cliente externo (otra terminal)
-# ssh -v ultdrako@<servidor> 2>&1 | grep -iE "kex:|WARNING"
+    - name: "[6/6] Validar KexAlgorithms efectivos"
+      ansible.builtin.shell: sshd -T 2>/dev/null | grep -i kexalgorithms
+      register: kex_check
+      changed_when: false
+
+    - name: "Reporte final"
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "OpenSSH: {{ ssh_version.stderr }}"
+          - "Drop-in: {{ sshd_dropin_path }} ({{ 'NEW' if sshd_dropin.changed else 'unchanged' }})"
+          - "KEX: {{ kex_check.stdout }}"
