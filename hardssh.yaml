@@ -1,4 +1,11 @@
 ---
+# ====================================================================
+# Drakos Cave SOC - SSH PostQuantum Hardening
+# Repo: https://github.com/ultdrako007/Automation
+# Aplicable a: hosts Debian 13 / Ubuntu 24.04 con OpenSSH 10.0+
+# Usuario de ejecución: franky (NOPASSWD ALL via bootstrap_franky.yml)
+# Versión: 2 (2026-06-22) - Fix validate %s
+# ====================================================================
 - name: SSH PostQuantum Hardening - Drakos SOC
   hosts: all
   become: yes
@@ -10,24 +17,34 @@
     sshd_dropin_content: |
       # ====================================================================
       # Drakos Cave SOC - Post-Quantum KEX hardening
-      # Aplicado: {{ ansible_date_time.date }} via Semaphore (bootstrap)
+      # Aplicado: {{ ansible_date_time.date }} via Semaphore
       # Algoritmos PQ híbridos (post-cuánticos + clásicos):
       #   - mlkem768x25519-sha256  (NIST ML-KEM, default OpenSSH 10.0+)
       #   - sntrup761x25519-sha512 (Streamlined NTRU Prime, OpenSSH 8.5+)
+      # Justificación: mitigación "harvest now, decrypt later"
       # ====================================================================
       KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
 
   tasks:
-    - name: "[1/6] Verificar versión OpenSSH"
+    - name: "[1/7] Verificar versión OpenSSH"
       ansible.builtin.command: ssh -V
       register: ssh_version
       changed_when: false
 
-    - name: "[2/6] Mostrar versión OpenSSH"
-      ansible.builtin.debug:
-        msg: "{{ inventory_hostname }}: {{ ssh_version.stderr }}"
+    - name: "[2/7] Validar que soporta PostQuantum (OpenSSH 9.0+)"
+      ansible.builtin.assert:
+        that:
+          - "'OpenSSH_9' in ssh_version.stderr or 'OpenSSH_10' in ssh_version.stderr or 'OpenSSH_11' in ssh_version.stderr"
+        fail_msg: "OpenSSH muy antiguo en {{ inventory_hostname }} para soportar PostQuantum: {{ ssh_version.stderr }}"
+        success_msg: "OpenSSH compatible: {{ ssh_version.stderr }}"
 
-    - name: "[3/6] Backup de sshd_config (idempotente)"
+    - name: "[3/7] Verificar que mlkem768x25519-sha256 está disponible"
+      ansible.builtin.shell: ssh -Q kex | grep -E 'mlkem768x25519-sha256'
+      register: kex_available
+      changed_when: false
+      failed_when: kex_available.rc != 0
+
+    - name: "[4/7] Backup de sshd_config (idempotente)"
       ansible.builtin.copy:
         src: /etc/ssh/sshd_config
         dest: "/etc/ssh/sshd_config.bak_{{ ansible_date_time.date }}_drakos"
@@ -37,31 +54,34 @@
         group: root
         mode: '0600'
 
-    - name: "[4/6] Aplicar drop-in PostQuantum"
+    - name: "[5/7] Aplicar drop-in PostQuantum"
       ansible.builtin.copy:
         dest: "{{ sshd_dropin_path }}"
         content: "{{ sshd_dropin_content }}"
         owner: root
         group: root
         mode: '0644'
-        validate: '/usr/sbin/sshd -t -f /dev/stdin'
+        validate: '/usr/sbin/sshd -t -f %s'
       register: sshd_dropin
 
-    - name: "[5/6] Reload SSH service (solo si cambió)"
+    - name: "[6/7] Reload SSH service (solo si cambió)"
       ansible.builtin.systemd:
         name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
         state: reloaded
       when: sshd_dropin.changed
 
-    - name: "[6/6] Validar KexAlgorithms efectivos"
+    - name: "[7/7] Validar KexAlgorithms efectivos post-aplicación"
       ansible.builtin.shell: sshd -T 2>/dev/null | grep -i kexalgorithms
       register: kex_check
       changed_when: false
 
-    - name: "Reporte final"
+    - name: "Reporte final por host"
       ansible.builtin.debug:
         msg:
+          - "════════════════════════════════════════"
           - "Host: {{ inventory_hostname }}"
           - "OpenSSH: {{ ssh_version.stderr }}"
-          - "Drop-in: {{ sshd_dropin_path }} ({{ 'NEW' if sshd_dropin.changed else 'unchanged' }})"
-          - "KEX: {{ kex_check.stdout }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Drop-in: {{ sshd_dropin_path }} ({{ 'APLICADO' if sshd_dropin.changed else 'sin cambios' }})"
+          - "KEX activos: {{ kex_check.stdout }}"
+          - "════════════════════════════════════════"
