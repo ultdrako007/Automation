@@ -1,0 +1,33 @@
+# 1. Verificar versión OpenSSH y soporte PQ
+ssh -V
+ssh -Q kex | grep -E 'mlkem|sntrup'
+
+# 2. Si NO soporta PQ → actualizar primero
+# sudo apt update && sudo apt install -y openssh-server
+
+# 3. Backup
+sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak_$(date +%Y%m%d_%H%M%S)
+
+# 4. Aplicar drop-in
+sudo tee /etc/ssh/sshd_config.d/99-drakos-postquantum.conf > /dev/null <<'EOF'
+# ====================================================================
+# Drakos Cave SOC — Post-Quantum KEX hardening
+# Aplicado: 2026-06-22 (Rev 44 patch 2)
+# Justificación: Mitigación "harvest now, decrypt later" (OpenSSH 10.1+)
+# Servidor piloto exitoso: misp.drakos.local
+# ====================================================================
+KexAlgorithms mlkem768x25519-sha256,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512
+EOF
+
+# 5. Validar sintaxis
+sudo sshd -t
+
+# 6. Reload (no cierra sesiones activas)
+sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd
+
+# 7. Confirmar
+sudo systemctl status ssh --no-pager | head -10
+sudo sshd -T | grep -i kexalgorithms
+
+# 8. Test desde cliente externo (otra terminal)
+# ssh -v ultdrako@<servidor> 2>&1 | grep -iE "kex:|WARNING"
