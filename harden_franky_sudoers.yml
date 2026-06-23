@@ -1,6 +1,6 @@
 ---
 - name: Drakos SOC - Endurecer sudoers de franky
-  hosts: linux
+  hosts: all
   become: yes
   gather_facts: yes
   vars:
