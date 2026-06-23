@@ -1,0 +1,83 @@
+---
+- name: Drakos SOC - Endurecer sudoers de franky
+  hosts: linux
+  become: yes
+  gather_facts: yes
+  vars:
+    sudoers_backup_dir: /etc/sudoers.d
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+  tasks:
+    - name: Verificar que franky existe
+      getent:
+        database: passwd
+        key: franky
+      register: franky_user
+
+    - name: Backup sudoers actual
+      copy:
+        src: /etc/sudoers.d/franky
+        dest: "/etc/sudoers.d/franky.bak_{{ timestamp }}"
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0440'
+
+    - name: Desplegar sudoers endurecido
+      copy:
+        dest: /etc/sudoers.d/franky
+        owner: root
+        group: root
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+        content: |
+          # Drakos SOC - franky service account
+          # Rev: 2026-06-23 - hardened from NOPASSWD: ALL
+          # Deployed via Semaphore template
+          
+          Defaults:franky !requiretty
+          
+          franky ALL=(root) NOPASSWD: /usr/bin/python3, /usr/bin/python3.*
+          franky ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg
+          franky ALL=(root) NOPASSWD: /bin/systemctl, /usr/bin/systemctl, /bin/journalctl, /usr/bin/journalctl
+          franky ALL=(root) NOPASSWD: /bin/chmod, /bin/chown, /bin/mkdir, /bin/rm, /bin/cp, /bin/mv
+          franky ALL=(root) NOPASSWD: /usr/bin/chmod, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rm, /usr/bin/cp, /usr/bin/mv
+          franky ALL=(root) NOPASSWD: /usr/bin/cat, /bin/cat
+          franky ALL=(root) NOPASSWD: /usr/bin/sha256sum, /usr/bin/md5sum
+          franky ALL=(root) NOPASSWD: /var/ossec/bin/wazuh-control, /var/ossec/bin/agent_control
+          franky ALL=(root) NOPASSWD: /usr/bin/ss, /usr/sbin/ss, /bin/ss
+          franky ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/sbin/iptables
+          franky ALL=(root) NOPASSWD: /usr/bin/tee, /bin/tee
+          
+          franky ALL=(ALL) !/bin/bash, !/bin/sh, !/bin/dash, !/usr/bin/bash, !/usr/bin/sh
+          franky ALL=(ALL) !/usr/bin/su, !/bin/su
+          franky ALL=(ALL) !/usr/bin/sudo, !/usr/sbin/visudo
+          franky ALL=(ALL) !/usr/bin/passwd, !/usr/bin/chsh, !/usr/bin/chfn
+          franky ALL=(ALL) !/usr/bin/vi /etc/sudoers*, !/usr/bin/vim /etc/sudoers*, !/usr/bin/nano /etc/sudoers*
+
+    - name: Validar que franky aún puede ejecutar python (smoke test)
+      command: sudo -u franky sudo -n /usr/bin/python3 --version
+      register: python_test
+      changed_when: false
+      failed_when: python_test.rc != 0
+
+    - name: Validar que bash está bloqueado (debe fallar)
+      command: sudo -u franky sudo -n /bin/bash -c "whoami"
+      register: bash_test
+      changed_when: false
+      failed_when: false
+
+    - name: Confirmar bloqueo de bash
+      assert:
+        that:
+          - bash_test.rc != 0
+        fail_msg: "🚨 CRÍTICO: bash NO está bloqueado en {{ inventory_hostname }}"
+        success_msg: "✅ bash bloqueado correctamente en {{ inventory_hostname }}"
+
+    - name: Reportar resumen
+      debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "Python OK: {{ python_test.stdout }}"
+          - "Bash bloqueado: {{ bash_test.rc != 0 }}"
+          - "Backup: /etc/sudoers.d/franky.bak_{{ timestamp }}"
