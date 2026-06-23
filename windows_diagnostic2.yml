@@ -1,0 +1,54 @@
+---
+# Drakos SOC - Windows diagnostic playbook (read-only)
+# Para validar que franky puede operar en los 10 Windows
+# Sin modificar nada
+
+- name: Drakos SOC - Windows diagnostic
+  hosts: all
+  gather_facts: yes
+  tasks:
+
+    - name: "Identidad - whoami y dominio"
+      win_shell: |
+        whoami
+        whoami /groups | findstr Administrators
+      register: identity
+
+    - name: "Versión OS"
+      win_shell: '[System.Environment]::OSVersion.VersionString'
+      register: os_version
+
+    - name: "Estado servicios clave"
+      win_service:
+        name: "{{ item }}"
+      register: svc_status
+      loop:
+        - sshd
+        - w32time
+      failed_when: false
+
+    - name: "NTP source actual"
+      win_shell: 'w32tm /query /source'
+      register: ntp_source
+
+    - name: "Sysmon corriendo"
+      win_shell: 'Get-Process -Name Sysmon64 -ErrorAction SilentlyContinue | Select-Object Id,Path'
+      register: sysmon
+
+    - name: "Wazuh agent status"
+      win_service:
+        name: WazuhSvc
+      register: wazuh_status
+      failed_when: false
+
+    - name: "Reporte consolidado"
+      debug:
+        msg:
+          - "═══════════════════════════════════════════"
+          - "Host: {{ inventory_hostname }} ({{ ansible_host | default('N/A') }})"
+          - "OS: {{ os_version.stdout | trim }}"
+          - "Identity: {{ identity.stdout_lines | first }}"
+          - "NTP Source: {{ ntp_source.stdout | trim }}"
+          - "Sysmon: {{ 'running' if sysmon.stdout | trim else 'NOT RUNNING' }}"
+          - "Wazuh agent: {{ wazuh_status.state | default('UNKNOWN') }}"
+          - "═══════════════════════════════════════════"
