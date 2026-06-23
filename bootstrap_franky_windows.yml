@@ -2,14 +2,15 @@
 # ============================================================================
 # Drakos Cave SOC - Bootstrap franky en Windows Server 2025
 # Fecha: 2026-06-22
-# Hosts: 10 Windows (8 ultdrako + 1 Administrator + 2 nuevos)
+# Versión: v2 (sin SFTP/SCP - usa solo win_powershell con inline content)
+# Hosts: 10 Windows (todos con usuario ultdrako post-hardening)
 # Tareas:
 #   1. Crear usuario local franky con admin rights
 #   2. Configurar SSH key authorization para franky
 #   3. Actualizar sshd_config con AllowUsers ultdrako franky
 #   4. Restart sshd
 # ============================================================================
-- name: Bootstrap franky Windows - Drakos SOC
+- name: Bootstrap franky Windows - Drakos SOC v2
   hosts: windows
   gather_facts: yes
   serial: 5
@@ -20,7 +21,7 @@
     franky_pubkey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICl/ddd0HOczgqAhJzuZ57v7hjcH+mkMMKdV4TBURsNg franky@semaphore-drakos-2026-06-22"
 
   tasks:
-    - name: "[1/7] Crear usuario local franky"
+    - name: "[1/7] Crear usuario local franky con admin rights"
       ansible.windows.win_user:
         name: "{{ franky_user }}"
         password: "{{ franky_password }}"
@@ -32,16 +33,24 @@
         groups_action: add
         state: present
 
-    - name: "[2/7] Crear directorio C:\\Users\\franky\\.ssh"
-      ansible.windows.win_file:
-        path: 'C:\Users\{{ franky_user }}\.ssh'
-        state: directory
+    - name: "[2/7] Crear directorio C:\\Users\\franky\\.ssh (inline)"
+      ansible.windows.win_powershell:
+        script: |
+          $path = 'C:\Users\{{ franky_user }}\.ssh'
+          if (-not (Test-Path $path)) {
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            'CREATED'
+          } else {
+            'ALREADY_EXISTS'
+          }
 
-    - name: "[3/7] Instalar franky_drakos.pub en authorized_keys"
-      ansible.windows.win_copy:
-        content: "{{ franky_pubkey }}\n"
-        dest: 'C:\Users\{{ franky_user }}\.ssh\authorized_keys'
-        force: yes
+    - name: "[3/7] Escribir authorized_keys (inline con Set-Content)"
+      ansible.windows.win_powershell:
+        script: |
+          $path = 'C:\Users\{{ franky_user }}\.ssh\authorized_keys'
+          $content = '{{ franky_pubkey }}'
+          Set-Content -Path $path -Value $content -Encoding ASCII -Force
+          'WRITTEN'
 
     - name: "[4/7] Configurar permisos NTFS en authorized_keys"
       ansible.windows.win_powershell:
@@ -51,23 +60,23 @@
           icacls $path /grant:r "{{ franky_user }}:F" 2>&1 | Out-Null
           icacls $path /grant:r "SYSTEM:F" 2>&1 | Out-Null
           icacls $path /grant:r "Administrators:F" 2>&1 | Out-Null
-          'OK'
+          'PERMISSIONS_SET'
 
     - name: "[5/7] Actualizar sshd_config: agregar franky a AllowUsers"
       ansible.windows.win_powershell:
         script: |
           $configPath = 'C:\ProgramData\ssh\sshd_config'
-          $content = Get-Content $configPath
-          $newContent = $content -replace '^AllowUsers ultdrako$', 'AllowUsers ultdrako franky'
-          if ($newContent -join "`n" -ne $content -join "`n") {
-            $newContent | Out-File -FilePath $configPath -Encoding ASCII -Force
+          $content = Get-Content $configPath -Raw
+          $newContent = $content -replace 'AllowUsers ultdrako\b(?! franky)', 'AllowUsers ultdrako franky'
+          if ($newContent -ne $content) {
+            Set-Content -Path $configPath -Value $newContent -Encoding ASCII -Force -NoNewline
             'UPDATED'
           } else {
             'NO_CHANGE_NEEDED'
           }
       register: sshd_update
 
-    - name: "[6/7] Restart sshd service"
+    - name: "[6/7] Restart sshd service (solo si sshd_config cambió)"
       ansible.windows.win_service:
         name: sshd
         state: restarted
