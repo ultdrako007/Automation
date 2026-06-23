@@ -1,0 +1,85 @@
+---
+# ============================================================================
+# Drakos SOC - Windows Diagnostic Playbook
+# Fecha: 2026-06-22
+# Uso:
+#   - Solo lectura / diagnóstico
+#   - Seguro para correr desde Semaphore
+#   - No modifica configuración
+# Recomendación:
+#   - Ejecutarlo primero con el usuario que YA sabes que funciona (ultdrako)
+# ============================================================================
+- name: Windows Diagnostic - Drakos SOC
+  hosts: windows
+  gather_facts: no
+  serial: 5
+
+  tasks:
+    - name: "[1/2] Recopilar información del host Windows"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference = 'SilentlyContinue'
+
+          $cfg = 'C:\ProgramData\ssh\sshd_config'
+          $adminKeys = 'C:\ProgramData\ssh\administrators_authorized_keys'
+
+          $os = Get-CimInstance Win32_OperatingSystem
+          $svc = Get-Service sshd -ErrorAction SilentlyContinue
+          $sshVersion = (ssh -V 2>&1) -join ''
+          $fqdn = ([System.Net.Dns]::GetHostByName($env:COMPUTERNAME)).HostName
+
+          $franky = Get-LocalUser -Name 'franky' -ErrorAction SilentlyContinue
+          $ultdrako = Get-LocalUser -Name 'ultdrako' -ErrorAction SilentlyContinue
+
+          $frankyInAdmins = $false
+          try {
+            $frankyInAdmins = (Get-LocalGroupMember Administrators | Where-Object {$_.Name -like '*franky*'}).Count -gt 0
+          } catch {}
+
+          $cfgRelevant = @()
+          if (Test-Path $cfg) {
+            $cfgRelevant = Get-Content $cfg | Select-String 'AuthorizedKeysFile|AllowUsers|KexAlgorithms'
+          }
+
+          $adminKeysLines = 0
+          if (Test-Path $adminKeys) {
+            $adminKeysLines = (Get-Content $adminKeys | Measure-Object -Line).Lines
+          }
+
+          $ipv4 = @()
+          try {
+            $ipv4 = Get-NetIPAddress -AddressFamily IPv4 |
+              Where-Object { $_.IPAddress -ne '127.0.0.1' } |
+              Select-Object -ExpandProperty IPAddress
+          } catch {}
+
+          # sshd -T puede fallar si el binario no está accesible; lo protegemos
+          $kexActive = ''
+          try {
+            $kex = & 'C:\Windows\System32\OpenSSH\sshd.exe' -T 2>$null | Select-String '^kexalgorithms'
+            if ($kex) { $kexActive = $kex.Line }
+          } catch {}
+
+          @{
+            Hostname               = $env:COMPUTERNAME
+            FQDN                   = $fqdn
+            OS                     = $os.Caption
+            Version                = $os.Version
+            BuildNumber            = $os.BuildNumber
+            OpenSSH                = $sshVersion
+            SshdStatus             = if ($svc) { $svc.Status.ToString() } else { 'NOT_FOUND' }
+            SshdStartType          = if ($svc) { $svc.StartType.ToString() } else { 'NOT_FOUND' }
+            UltdrakoExists         = if ($ultdrako) { $ultdrako.Enabled } else { $false }
+            FrankyExists           = if ($franky) { $franky.Enabled } else { $false }
+            FrankyInAdministrators = $frankyInAdmins
+            AdminKeysExists        = Test-Path $adminKeys
+            AdminKeysLines         = $adminKeysLines
+            ConfigRelevant         = ($cfgRelevant | Select-Object -ExpandProperty Line)
+            KexActive              = $kexActive
+            IPv4                   = $ipv4
+          } | ConvertTo-Json -Depth 4 -Compress
+      register: win_diag
+
+    - name: "[2/2] Mostrar diagnóstico por host"
+      ansible.builtin.debug:
+        var: win_diag.output
