@@ -1,20 +1,40 @@
 ---
+# Drakos SOC - Hardening del sudoers de franky
+# Rev: 2026-06-23
+# Operador: ultdrako
+# Target: 14 hosts Linux (debian_hosts + ubuntu_hosts)
+#
+# Cambia franky de NOPASSWD: ALL a una whitelist de comandos
+# necesarios para Ansible, con denegaciones explícitas de shells.
+
 - name: Drakos SOC - Endurecer sudoers de franky
   hosts: all
-  become: yes
   gather_facts: yes
+  become: yes
+  become_method: sudo
+  become_user: root
+
   vars:
-    sudoers_backup_dir: /etc/sudoers.d
+    # Forzar sudo sin password (porque franky tiene NOPASSWD)
+    ansible_become_password: ""
+    ansible_become_flags: "-n"
     timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
 
   tasks:
-    - name: Verificar que franky existe
+    - name: "Pre-check | Verificar que franky existe como usuario"
       getent:
         database: passwd
         key: franky
-      register: franky_user
+      register: franky_check
+      failed_when: franky_check.failed | default(false)
 
-    - name: Backup sudoers actual
+    - name: "Pre-check | Verificar que el sudoers actual existe"
+      stat:
+        path: /etc/sudoers.d/franky
+      register: sudoers_stat
+      failed_when: not sudoers_stat.stat.exists
+
+    - name: "Backup | Crear copia del sudoers actual"
       copy:
         src: /etc/sudoers.d/franky
         dest: "/etc/sudoers.d/franky.bak_{{ timestamp }}"
@@ -23,7 +43,7 @@
         group: root
         mode: '0440'
 
-    - name: Desplegar sudoers endurecido
+    - name: "Deploy | Escribir el sudoers endurecido"
       copy:
         dest: /etc/sudoers.d/franky
         owner: root
@@ -33,51 +53,98 @@
         content: |
           # Drakos SOC - franky service account
           # Rev: 2026-06-23 - hardened from NOPASSWD: ALL
-          # Deployed via Semaphore template
-          
+          # Deployed via Semaphore template harden_franky_sudoers
+
           Defaults:franky !requiretty
-          
+
+          # === COMANDOS PERMITIDOS (NOPASSWD) ===
+
+          # Python para módulos Ansible
           franky ALL=(root) NOPASSWD: /usr/bin/python3, /usr/bin/python3.*
+
+          # Gestión de paquetes Debian/Ubuntu
           franky ALL=(root) NOPASSWD: /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dpkg
+
+          # Servicios y logs (systemd)
           franky ALL=(root) NOPASSWD: /bin/systemctl, /usr/bin/systemctl, /bin/journalctl, /usr/bin/journalctl
+
+          # Operaciones de archivos (Ansible file/copy/template)
           franky ALL=(root) NOPASSWD: /bin/chmod, /bin/chown, /bin/mkdir, /bin/rm, /bin/cp, /bin/mv
           franky ALL=(root) NOPASSWD: /usr/bin/chmod, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/rm, /usr/bin/cp, /usr/bin/mv
+
+          # Lectura
           franky ALL=(root) NOPASSWD: /usr/bin/cat, /bin/cat
           franky ALL=(root) NOPASSWD: /usr/bin/sha256sum, /usr/bin/md5sum
+
+          # Wazuh
           franky ALL=(root) NOPASSWD: /var/ossec/bin/wazuh-control, /var/ossec/bin/agent_control
+
+          # Diagnóstico de red
           franky ALL=(root) NOPASSWD: /usr/bin/ss, /usr/sbin/ss, /bin/ss
           franky ALL=(root) NOPASSWD: /usr/sbin/nft, /usr/sbin/iptables
+
+          # Edición controlada
           franky ALL=(root) NOPASSWD: /usr/bin/tee, /bin/tee
-          
+
+          # === DENEGACIONES EXPLÍCITAS (defensa en profundidad) ===
+
           franky ALL=(ALL) !/bin/bash, !/bin/sh, !/bin/dash, !/usr/bin/bash, !/usr/bin/sh
           franky ALL=(ALL) !/usr/bin/su, !/bin/su
           franky ALL=(ALL) !/usr/bin/sudo, !/usr/sbin/visudo
           franky ALL=(ALL) !/usr/bin/passwd, !/usr/bin/chsh, !/usr/bin/chfn
           franky ALL=(ALL) !/usr/bin/vi /etc/sudoers*, !/usr/bin/vim /etc/sudoers*, !/usr/bin/nano /etc/sudoers*
 
-    - name: Validar que franky aún puede ejecutar python (smoke test)
-      command: sudo -u franky sudo -n /usr/bin/python3 --version
+    - name: "Validate | Sintaxis sudoers global"
+      command: /usr/sbin/visudo -c
+      register: visudo_check
+      changed_when: false
+      failed_when: visudo_check.rc != 0
+
+    - name: "Smoke test | python ejecutable por franky"
+      shell: sudo -u franky sudo -n /usr/bin/python3 --version
       register: python_test
       changed_when: false
-      failed_when: python_test.rc != 0
 
-    - name: Validar que bash está bloqueado (debe fallar)
-      command: sudo -u franky sudo -n /bin/bash -c "whoami"
+    - name: "Smoke test | systemctl ejecutable por franky"
+      shell: sudo -u franky sudo -n /bin/systemctl --version
+      register: systemctl_test
+      changed_when: false
+
+    - name: "Security test | bash DEBE estar bloqueado"
+      shell: sudo -u franky sudo -n /bin/bash -c "whoami"
       register: bash_test
       changed_when: false
       failed_when: false
 
-    - name: Confirmar bloqueo de bash
+    - name: "Security test | su DEBE estar bloqueado"
+      shell: sudo -u franky sudo -n /bin/su -
+      register: su_test
+      changed_when: false
+      failed_when: false
+
+    - name: "Validate | Confirmar que bash NO ejecuta como root"
       assert:
         that:
           - bash_test.rc != 0
-        fail_msg: "🚨 CRÍTICO: bash NO está bloqueado en {{ inventory_hostname }}"
-        success_msg: "✅ bash bloqueado correctamente en {{ inventory_hostname }}"
+        fail_msg: "🚨 CRÍTICO: bash está permitido en {{ inventory_hostname }}"
+        success_msg: "✅ bash bloqueado en {{ inventory_hostname }}"
 
-    - name: Reportar resumen
+    - name: "Validate | Confirmar que su NO ejecuta como root"
+      assert:
+        that:
+          - su_test.rc != 0
+        fail_msg: "🚨 CRÍTICO: su está permitido en {{ inventory_hostname }}"
+        success_msg: "✅ su bloqueado en {{ inventory_hostname }}"
+
+    - name: "Report | Resumen del hardening"
       debug:
         msg:
-          - "Host: {{ inventory_hostname }}"
-          - "Python OK: {{ python_test.stdout }}"
-          - "Bash bloqueado: {{ bash_test.rc != 0 }}"
+          - "═══════════════════════════════════════════"
+          - "Host: {{ inventory_hostname }} ({{ ansible_default_ipv4.address | default('N/A') }})"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Python: {{ python_test.stdout }}"
+          - "Systemctl: OK"
+          - "Bash bloqueado: ✅"
+          - "Su bloqueado: ✅"
           - "Backup: /etc/sudoers.d/franky.bak_{{ timestamp }}"
+          - "═══════════════════════════════════════════"
