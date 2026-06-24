@@ -5,7 +5,11 @@
 # Operador: Enrique Flores Pichardo
 # Manager:  Alejandro Gongora
 # Fecha:    2026-06-24
-# Versión:  1.0.0
+# Versión:  1.0.1
+# Changelog:
+#   1.0.0 - Initial release
+#   1.0.1 - Fix YAML backslash escape bug in win_regedit path
+#           (use single quotes for path to bypass YAML escape parsing)
 #
 # Propósito:
 #   Evitar que la ventana de Server Manager se abra automáticamente
@@ -25,41 +29,37 @@
 # 📋 README - Semaphore Configuration
 # ============================================================
 #
-# 1. Crear template en Semaphore UI:
-#    Name:          Disable Server Manager RDP (Windows)
+# 1. Template config en Semaphore UI:
+#    Name:          disable_server_manager_rdp
 #    Playbook:      disable_server_manager_rdp.yml
-#    Inventory:     drakos_windows (los 10 hosts)
+#    Inventory:     Windows (los 10 hosts)
 #    Repository:    github.com/ultdrako007/Automation
-#    Environment:   default
-#    SSH Key:       franky_drakos (UID 1001)
+#    Variable Grp:  Main
 #
-# 2. CLI Arguments (mientras NEW-I esté pendiente):
-#    ["-e", "ansible_become_pass=", "-e", "ansible_become_flags=-n"]
+# 2. CLI Arguments (4 chips SEPARADOS, no JSON array):
+#      [-e] [ansible_become_pass=] [-e] [ansible_become_flags=-n]
 #
-#    Una vez NEW-I cerrada, estos args ya no serán necesarios.
+#    Una vez NEW-I cerrada, estos args podrían no ser necesarios.
 #
-# 3. Schedule (opcional):
-#    No es necesario - es one-shot. Ejecutar manualmente.
-#
-# 4. Tags útiles:
+# 3. Tags útiles:
 #    --tags serverManager     -> ejecuta solo Layer 1
 #    --tags rdp               -> ejecuta solo Layer 2
 #    --tags verify            -> solo verifica estado actual
 #    --check                  -> dry run, NO modifica nada
 #
-# 5. Expected behavior:
+# 4. Expected behavior:
 #    - Idempotente: correr 10 veces da el mismo resultado
 #    - changed=1 la primera vez, changed=0 las siguientes
 #    - Sin reboot requerido
 #    - Sin afectar sesiones RDP activas
 #
-# 6. Rollback (si algo se rompe):
+# 5. Rollback (si algo se rompe):
 #    Re-habilitar scheduled task:
 #      schtasks /Change /TN "\Microsoft\Windows\Server Manager\ServerManager" /ENABLE
 #    Borrar registry override:
 #      reg delete "HKCU\Software\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /f
 #
-# 7. Next steps después de ejecutar:
+# 6. Next steps después de ejecutar:
 #    - Confirmar con sesión RDP de prueba a 1 host (e.g., Vesta)
 #    - Si OK, marcar como aplicado en backlog
 #    - Documentar en handover del día
@@ -173,9 +173,12 @@
           ansible.builtin.debug:
             msg: "Profiles to update: {{ user_profiles.stdout_lines }}"
 
+        # NOTA: usamos single quotes en el path para evitar que YAML
+        # interprete los \ como escapes (bug fix v1.0.1).
+        # Dentro de single quotes, los \ son literales.
         - name: 🔒 Aplicar registry DoNotOpenServerManagerAtLogon=1 para perfiles cargados
           ansible.windows.win_regedit:
-            path: "HKU:\{{ item.split('|')[0] }}\{{ registry_subkey }}"
+            path: 'HKU:\{{ item.split("|")[0] }}\{{ registry_subkey }}'
             name: "{{ registry_value_name }}"
             data: "{{ registry_value_data }}"
             type: dword
@@ -183,18 +186,18 @@
           loop: "{{ user_profiles.stdout_lines }}"
           when:
             - user_profiles.stdout_lines | length > 0
-            - "'|' in item"
+            - '"|" in item'
           register: registry_loaded
           ignore_errors: yes  # algunos SIDs no estarán cargados en HKU
 
         - name: 🔒 Aplicar registry para perfiles NO cargados (load + modify + unload)
           ansible.windows.win_shell: |
             $changed = $false
-            $sid  = '{{ item.split('|')[0] }}'
-            $path = '{{ item.split('|')[1] }}'
+            $sid  = '{{ item.split("|")[0] }}'
+            $path = '{{ item.split("|")[1] }}'
             $hivePath = "$path\NTUSER.DAT"
 
-            # Skip si el hive ya está cargado (Layer anterior)
+            # Skip si el hive ya está cargado (Layer anterior lo manejó)
             if (Test-Path "HKU:\$sid") {
               Write-Output "ALREADY_LOADED"
               return
@@ -206,10 +209,11 @@
             }
 
             try {
-              # Load hive temporalmente
-              reg.exe load "HKU\TempDrakos_$sid" "$hivePath" | Out-Null
+              # Load hive temporalmente con un mount name único
+              $tempMount = "TempDrakos_$($sid.Replace('-','_'))"
+              reg.exe load "HKU\$tempMount" "$hivePath" | Out-Null
 
-              $regPath = "HKU:\TempDrakos_$sid\{{ registry_subkey }}"
+              $regPath = "HKU:\$tempMount\{{ registry_subkey }}"
               if (-not (Test-Path $regPath)) {
                 New-Item -Path $regPath -Force | Out-Null
                 $changed = $true
@@ -221,23 +225,24 @@
                 $changed = $true
               }
 
-              # Force GC y unload
+              # Force GC y unload (workaround PowerShell registry handle leak)
               [gc]::Collect()
+              [gc]::WaitForPendingFinalizers()
               Start-Sleep -Milliseconds 500
-              reg.exe unload "HKU\TempDrakos_$sid" | Out-Null
+              reg.exe unload "HKU\$tempMount" | Out-Null
 
               if ($changed) { Write-Output "CHANGED" } else { Write-Output "NOCHANGE" }
             } catch {
               Write-Output "ERROR: $_"
               # Best effort cleanup
-              reg.exe unload "HKU\TempDrakos_$sid" 2>&1 | Out-Null
+              reg.exe unload "HKU\$tempMount" 2>&1 | Out-Null
             }
           loop: "{{ user_profiles.stdout_lines }}"
           when:
             - user_profiles.stdout_lines | length > 0
-            - "'|' in item"
+            - '"|" in item'
           register: registry_unloaded
-          changed_when: "'CHANGED' in registry_unloaded.stdout | default('')"
+          changed_when: "'CHANGED' in (registry_unloaded.stdout | default(''))"
 
       rescue:
         - name: ⚠️ Layer 2 falló - registrar para análisis
