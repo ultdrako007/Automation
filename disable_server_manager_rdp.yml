@@ -1,0 +1,306 @@
+---
+# ============================================================
+# 🐉 Drakos SOC — Disable Server Manager auto-start on RDP login
+# ============================================================
+# Operador: Enrique Flores Pichardo
+# Manager:  Alejandro Gongora
+# Fecha:    2026-06-24
+# Versión:  1.0.0
+#
+# Propósito:
+#   Evitar que la ventana de Server Manager se abra automáticamente
+#   al iniciar sesión por RDP en los 10 Windows del SOC.
+#
+# Hosts objetivo (10):
+#   DrakosTrooper, nicorobin, drakoshv, Veeam (DrakosBK), Vesta,
+#   DrakosDHCP, DPS, Backups2, Nami, BoaHancock
+#
+# Estrategia (defense-in-depth - belt + suspenders):
+#   Layer 1: Deshabilitar scheduled task ServerManager (machine-wide)
+#            -> Afecta a TODOS los usuarios existentes y futuros
+#   Layer 2: Registry DoNotOpenServerManagerAtLogon=1 por user profile
+#            -> Cubre franky.HOSTNAME, ultdrako, Administrator, etc.
+#
+# ============================================================
+# 📋 README - Semaphore Configuration
+# ============================================================
+#
+# 1. Crear template en Semaphore UI:
+#    Name:          Disable Server Manager RDP (Windows)
+#    Playbook:      disable_server_manager_rdp.yml
+#    Inventory:     drakos_windows (los 10 hosts)
+#    Repository:    github.com/ultdrako007/Automation
+#    Environment:   default
+#    SSH Key:       franky_drakos (UID 1001)
+#
+# 2. CLI Arguments (mientras NEW-I esté pendiente):
+#    ["-e", "ansible_become_pass=", "-e", "ansible_become_flags=-n"]
+#
+#    Una vez NEW-I cerrada, estos args ya no serán necesarios.
+#
+# 3. Schedule (opcional):
+#    No es necesario - es one-shot. Ejecutar manualmente.
+#
+# 4. Tags útiles:
+#    --tags serverManager     -> ejecuta solo Layer 1
+#    --tags rdp               -> ejecuta solo Layer 2
+#    --tags verify            -> solo verifica estado actual
+#    --check                  -> dry run, NO modifica nada
+#
+# 5. Expected behavior:
+#    - Idempotente: correr 10 veces da el mismo resultado
+#    - changed=1 la primera vez, changed=0 las siguientes
+#    - Sin reboot requerido
+#    - Sin afectar sesiones RDP activas
+#
+# 6. Rollback (si algo se rompe):
+#    Re-habilitar scheduled task:
+#      schtasks /Change /TN "\Microsoft\Windows\Server Manager\ServerManager" /ENABLE
+#    Borrar registry override:
+#      reg delete "HKCU\Software\Microsoft\ServerManager" /v DoNotOpenServerManagerAtLogon /f
+#
+# 7. Next steps después de ejecutar:
+#    - Confirmar con sesión RDP de prueba a 1 host (e.g., Vesta)
+#    - Si OK, marcar como aplicado en backlog
+#    - Documentar en handover del día
+#
+# ============================================================
+
+- name: 🐉 Disable Server Manager auto-start on RDP login
+  hosts: windows
+  gather_facts: yes
+  any_errors_fatal: false
+  serial: "100%"  # paralelo total - es cosmético, bajo riesgo
+
+  vars:
+    server_manager_task_path: '\Microsoft\Windows\Server Manager\ServerManager'
+    registry_subkey: 'Software\Microsoft\ServerManager'
+    registry_value_name: 'DoNotOpenServerManagerAtLogon'
+    registry_value_data: 1
+
+  tasks:
+
+    # =========================================================
+    # Pre-flight checks
+    # =========================================================
+    - name: 🔍 Pre-flight - Verificar conectividad y OS
+      ansible.windows.win_shell: |
+        $os = Get-CimInstance Win32_OperatingSystem
+        Write-Output "Host:    $env:COMPUTERNAME"
+        Write-Output "OS:      $($os.Caption)"
+        Write-Output "Version: $($os.Version)"
+        Write-Output "User:    $env:USERNAME"
+      register: preflight
+      changed_when: false
+      tags:
+        - always
+        - verify
+
+    - name: 📊 Pre-flight - Mostrar info del host
+      ansible.builtin.debug:
+        msg: "{{ preflight.stdout_lines }}"
+      tags:
+        - always
+        - verify
+
+    # =========================================================
+    # LAYER 1 - Scheduled Task (machine-wide)
+    # =========================================================
+    - name: 🛡️ Layer 1 - Bloque scheduled task disable
+      tags:
+        - serverManager
+        - layer1
+      block:
+
+        - name: 🔍 Verificar estado actual del scheduled task
+          ansible.windows.win_shell: |
+            try {
+              $task = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Server Manager\' -TaskName 'ServerManager' -ErrorAction Stop
+              Write-Output "STATE=$($task.State)"
+            } catch {
+              Write-Output "STATE=NOT_FOUND"
+            }
+          register: task_state
+          changed_when: false
+
+        - name: 📊 Mostrar estado actual del task
+          ansible.builtin.debug:
+            msg: "ServerManager task state: {{ task_state.stdout | trim }}"
+
+        - name: 🔒 Deshabilitar scheduled task ServerManager (machine-wide)
+          ansible.windows.win_shell: |
+            $task = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Server Manager\' -TaskName 'ServerManager' -ErrorAction SilentlyContinue
+            if ($task -and $task.State -ne 'Disabled') {
+              Disable-ScheduledTask -TaskPath '\Microsoft\Windows\Server Manager\' -TaskName 'ServerManager' | Out-Null
+              Write-Output "CHANGED"
+            } else {
+              Write-Output "NOCHANGE"
+            }
+          register: task_disable
+          changed_when: "'CHANGED' in task_disable.stdout"
+          when:
+            - "'NOT_FOUND' not in task_state.stdout"
+            - "'Disabled' not in task_state.stdout"
+
+      rescue:
+        - name: ⚠️ Layer 1 falló - registrar pero continuar
+          ansible.builtin.debug:
+            msg: "Layer 1 (scheduled task) falló en {{ inventory_hostname }}. Layer 2 cubrirá el caso."
+
+    # =========================================================
+    # LAYER 2 - Registry per user profile
+    # =========================================================
+    - name: 🛡️ Layer 2 - Bloque registry per-user
+      tags:
+        - rdp
+        - layer2
+      block:
+
+        - name: 🔍 Enumerar perfiles de usuario locales con NTUSER.DAT
+          ansible.windows.win_shell: |
+            $profiles = Get-CimInstance Win32_UserProfile | Where-Object {
+              $_.Special -eq $false -and (Test-Path "$($_.LocalPath)\NTUSER.DAT")
+            }
+            $profiles | ForEach-Object {
+              $sid = $_.SID
+              $path = $_.LocalPath
+              Write-Output "$sid|$path"
+            }
+          register: user_profiles
+          changed_when: false
+
+        - name: 📊 Mostrar perfiles encontrados
+          ansible.builtin.debug:
+            msg: "Profiles to update: {{ user_profiles.stdout_lines }}"
+
+        - name: 🔒 Aplicar registry DoNotOpenServerManagerAtLogon=1 para perfiles cargados
+          ansible.windows.win_regedit:
+            path: "HKU:\{{ item.split('|')[0] }}\{{ registry_subkey }}"
+            name: "{{ registry_value_name }}"
+            data: "{{ registry_value_data }}"
+            type: dword
+            state: present
+          loop: "{{ user_profiles.stdout_lines }}"
+          when:
+            - user_profiles.stdout_lines | length > 0
+            - "'|' in item"
+          register: registry_loaded
+          ignore_errors: yes  # algunos SIDs no estarán cargados en HKU
+
+        - name: 🔒 Aplicar registry para perfiles NO cargados (load + modify + unload)
+          ansible.windows.win_shell: |
+            $changed = $false
+            $sid  = '{{ item.split('|')[0] }}'
+            $path = '{{ item.split('|')[1] }}'
+            $hivePath = "$path\NTUSER.DAT"
+
+            # Skip si el hive ya está cargado (Layer anterior)
+            if (Test-Path "HKU:\$sid") {
+              Write-Output "ALREADY_LOADED"
+              return
+            }
+
+            if (-not (Test-Path $hivePath)) {
+              Write-Output "NTUSER_NOT_FOUND"
+              return
+            }
+
+            try {
+              # Load hive temporalmente
+              reg.exe load "HKU\TempDrakos_$sid" "$hivePath" | Out-Null
+
+              $regPath = "HKU:\TempDrakos_$sid\{{ registry_subkey }}"
+              if (-not (Test-Path $regPath)) {
+                New-Item -Path $regPath -Force | Out-Null
+                $changed = $true
+              }
+
+              $current = Get-ItemProperty -Path $regPath -Name '{{ registry_value_name }}' -ErrorAction SilentlyContinue
+              if ($null -eq $current -or $current.'{{ registry_value_name }}' -ne {{ registry_value_data }}) {
+                Set-ItemProperty -Path $regPath -Name '{{ registry_value_name }}' -Value {{ registry_value_data }} -Type DWord -Force
+                $changed = $true
+              }
+
+              # Force GC y unload
+              [gc]::Collect()
+              Start-Sleep -Milliseconds 500
+              reg.exe unload "HKU\TempDrakos_$sid" | Out-Null
+
+              if ($changed) { Write-Output "CHANGED" } else { Write-Output "NOCHANGE" }
+            } catch {
+              Write-Output "ERROR: $_"
+              # Best effort cleanup
+              reg.exe unload "HKU\TempDrakos_$sid" 2>&1 | Out-Null
+            }
+          loop: "{{ user_profiles.stdout_lines }}"
+          when:
+            - user_profiles.stdout_lines | length > 0
+            - "'|' in item"
+          register: registry_unloaded
+          changed_when: "'CHANGED' in registry_unloaded.stdout | default('')"
+
+      rescue:
+        - name: ⚠️ Layer 2 falló - registrar para análisis
+          ansible.builtin.debug:
+            msg: "Layer 2 (registry per-user) tuvo issues en {{ inventory_hostname }}. Revisar logs."
+
+    # =========================================================
+    # Verification
+    # =========================================================
+    - name: ✅ Verificación final - Layer 1 (task disabled)
+      ansible.windows.win_shell: |
+        $task = Get-ScheduledTask -TaskPath '\Microsoft\Windows\Server Manager\' -TaskName 'ServerManager' -ErrorAction SilentlyContinue
+        if ($task) {
+          Write-Output "TASK_STATE=$($task.State)"
+        } else {
+          Write-Output "TASK_STATE=NOT_FOUND"
+        }
+      register: verify_task
+      changed_when: false
+      tags:
+        - verify
+        - always
+
+    - name: ✅ Verificación final - Layer 2 (registry per-user)
+      ansible.windows.win_shell: |
+        $results = @()
+        $profiles = Get-CimInstance Win32_UserProfile | Where-Object {
+          $_.Special -eq $false -and (Test-Path "$($_.LocalPath)\NTUSER.DAT")
+        }
+        foreach ($p in $profiles) {
+          $loaded = Test-Path "HKU:\$($p.SID)"
+          if ($loaded) {
+            $val = Get-ItemProperty -Path "HKU:\$($p.SID)\{{ registry_subkey }}" -Name '{{ registry_value_name }}' -ErrorAction SilentlyContinue
+            $results += "$($p.LocalPath): $($val.'{{ registry_value_name }}')"
+          } else {
+            $results += "$($p.LocalPath): NOT_LOADED (verify on next login)"
+          }
+        }
+        $results | ForEach-Object { Write-Output $_ }
+      register: verify_registry
+      changed_when: false
+      tags:
+        - verify
+        - always
+
+    # =========================================================
+    # Summary
+    # =========================================================
+    - name: 📊 Resumen del cambio
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "🐉 Drakos SOC - Server Manager RDP Disable"
+          - "============================================"
+          - "Host:                 {{ inventory_hostname }}"
+          - "Layer 1 (task):       {{ verify_task.stdout | trim }}"
+          - "Layer 2 (registry):"
+          - "{{ verify_registry.stdout_lines | default(['(no output)']) }}"
+          - "============================================"
+          - "Esperado:"
+          - "  Layer 1: TASK_STATE=Disabled"
+          - "  Layer 2: SID:1 para cada perfil cargado"
+          - "============================================"
+      tags:
+        - always
+        - verify
