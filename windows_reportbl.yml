@@ -1,0 +1,712 @@
+---
+# ============================================================================
+# Drakos Cave SOC - Extraccion integral de configuracion (Windows)
+# Fecha: 2026-09-17
+# Version: v1
+#
+# PROPOSITO
+#   Extraer el estado de configuracion COMPLETO de cada host para construir
+#   un baseline a partir de datos reales, no de suposiciones.
+#   El resultado es un JSON por host + un consolidado, listos para analisis.
+#
+# SOLO LECTURA. No modifica nada en los hosts.
+#
+# TRANSPORTE
+#   Todo se devuelve por stdout de win_powershell (SSH) y se ensambla en el
+#   controlador. NO usa fetch/slurp/win_copy, porque el subsistema SFTP esta
+#   deshabilitado en estos hosts.
+#
+# EXCLUSIONES DELIBERADAS (higiene de seguridad)
+#   - No exporta hashes de contrasenas ni secretos LSA.
+#   - No exporta contenido de authorized_keys ni claves privadas
+#     (solo presencia, tamano, hash SHA256 y ACL).
+#   - No exporta cadenas de conexion ni credenciales almacenadas.
+#   El JSON resultante sigue siendo sensible: trata el reporte como
+#   informacion confidencial y no lo subas al repositorio publico.
+#
+# BLOQUES
+#   01 Sistema, hardware, SO, arranque
+#   02 Red: interfaces, rutas, DNS, shares, puertos a la escucha
+#   03 Identidad: usuarios, grupos, politica local (secedit), derechos
+#   04 Servicios: todos, con cuenta de inicio y modo de arranque
+#   05 Software, roles/features, hotfixes
+#   06 Tareas programadas y arranque automatico
+#   07 Firewall: perfiles y reglas de entrada habilitadas
+#   08 Acceso remoto: sshd_config completo, RDP, WinRM
+#   09 Seguridad: Defender, BitLocker, protocolos, LSA, UAC
+#   10 Auditoria: auditpol completo, logs de eventos, PowerShell logging
+#   11 Registro: volcado de claves de politica relevantes
+#   12 GPO aplicadas, zona horaria, NTP, certificados
+#
+# USO
+#   ansible-playbook -i inventory windows_config_dump.yml
+#   ansible-playbook -i inventory windows_config_dump.yml --limit Aiz
+#   ansible-playbook -i inventory windows_config_dump.yml -e "dump_dir=/var/baseline"
+#
+# Si Semaphore corre en contenedor, apunta dump_dir a un volumen montado.
+# ============================================================================
+- name: Drakos SOC - Extraccion integral de configuracion
+  hosts: windows
+  gather_facts: yes
+  # Lotes pequenos: cada host devuelve varios cientos de KB por stdout
+  serial: "{{ dump_batch | default(5) }}"
+
+  vars:
+    dump_dir: '/tmp/drakos_baseline'
+    dump_stamp: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+  tasks:
+    # ======================================================================
+    # 01 - SISTEMA
+    # ======================================================================
+    - name: "[01/12] Sistema, hardware y SO"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          $os=Get-CimInstance Win32_OperatingSystem
+          $cs=Get-CimInstance Win32_ComputerSystem
+          $bios=Get-CimInstance Win32_BIOS
+          $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
+          @{
+            Hostname=$env:COMPUTERNAME
+            FQDN="$($cs.DNSHostName).$($cs.Domain)"
+            Domain=$cs.Domain; PartOfDomain=$cs.PartOfDomain; DomainRole=$cs.DomainRole
+            Workgroup=$cs.Workgroup
+            OSCaption=$os.Caption; OSVersion=$os.Version; OSBuild=$os.BuildNumber
+            UBR=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name UBR).UBR
+            DisplayVersion=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name DisplayVersion).DisplayVersion
+            EditionID=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name EditionID).EditionID
+            InstallDate=$os.InstallDate.ToString('s')
+            LastBoot=$os.LastBootUpTime.ToString('s')
+            UptimeDays=[math]::Round(((Get-Date)-$os.LastBootUpTime).TotalDays,2)
+            OSArch=$os.OSArchitecture; OSLanguage=$os.OSLanguage
+            SystemLocale=(Get-WinSystemLocale).Name
+            Manufacturer=$cs.Manufacturer; Model=$cs.Model
+            Serial=$bios.SerialNumber; BIOSVersion=($bios.BIOSVersion -join ',')
+            BIOSDate=if($bios.ReleaseDate){$bios.ReleaseDate.ToString('s')}else{''}
+            SecureBoot=(Confirm-SecureBootUEFI)
+            CPUName=$cpu.Name; CPUCores=$cs.NumberOfProcessors
+            CPULogical=$cs.NumberOfLogicalProcessors
+            RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,2)
+            PageFile=((Get-CimInstance Win32_PageFileUsage).Name -join ';')
+            Virtual=($cs.Model -match 'Virtual|VMware|KVM|Hyper-V')
+            PSVersion=$PSVersionTable.PSVersion.ToString()
+            DotNet=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -Name Release).Release
+            Disks=@(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | ForEach-Object {
+              @{ Drive=$_.DeviceID; SizeGB=[math]::Round($_.Size/1GB,2)
+                 FreeGB=[math]::Round($_.FreeSpace/1GB,2); FS=$_.FileSystem
+                 FreePct=if($_.Size){[math]::Round($_.FreeSpace/$_.Size*100,1)}else{0} } })
+            PhysicalDisks=@(Get-PhysicalDisk | ForEach-Object {
+              @{ Model=$_.FriendlyName; SizeGB=[math]::Round($_.Size/1GB,1)
+                 Type=$_.MediaType; Health=$_.HealthStatus.ToString() } })
+          } | ConvertTo-Json -Depth 6 -Compress
+      register: b01
+      changed_when: false
+
+    # ======================================================================
+    # 02 - RED
+    # ======================================================================
+    - name: "[02/12] Red, shares y puertos"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          @{
+            Adapters=@(Get-NetAdapter | ForEach-Object {
+              @{ Name=$_.Name; Desc=$_.InterfaceDescription; MAC=$_.MacAddress
+                 Status=$_.Status.ToString(); SpeedMbps=[math]::Round($_.LinkSpeed/1e6,0)
+                 VLAN=$_.VlanID } })
+            IPv4=@(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '127.*'} |
+              ForEach-Object { @{ IP=$_.IPAddress; Prefix=$_.PrefixLength
+                 Interface=$_.InterfaceAlias; Origin=$_.PrefixOrigin.ToString() } })
+            Routes=@(Get-NetRoute -AddressFamily IPv4 | Where-Object {$_.DestinationPrefix -eq '0.0.0.0/0'} |
+              ForEach-Object { @{ Gateway=$_.NextHop; Interface=$_.InterfaceAlias; Metric=$_.RouteMetric } })
+            DNSServers=@(Get-DnsClientServerAddress -AddressFamily IPv4 |
+              Where-Object {$_.ServerAddresses.Count -gt 0} |
+              ForEach-Object { @{ Interface=$_.InterfaceAlias; Servers=($_.ServerAddresses -join ';') } })
+            DNSSuffix=(Get-DnsClient | Select-Object -First 1).ConnectionSpecificSuffix
+            IPv6Enabled=@(Get-NetAdapterBinding -ComponentID ms_tcpip6 | Where-Object {$_.Enabled}).Count -gt 0
+            Shares=@(Get-SmbShare | ForEach-Object {
+              @{ Name=$_.Name; Path=$_.Path; Desc=$_.Description
+                 Access=@(Get-SmbShareAccess -Name $_.Name | ForEach-Object {
+                   "$($_.AccountName):$($_.AccessRight)" }) -join ';' } })
+            ListeningTCP=@(Get-NetTCPConnection -State Listen |
+              Where-Object {$_.LocalAddress -notmatch '^(127\.|::1)'} |
+              ForEach-Object {
+                $p=Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+                @{ Port=$_.LocalPort; Address=$_.LocalAddress
+                   Process=if($p){$p.ProcessName}else{'?'} } } |
+              Sort-Object {$_.Port} -Unique)
+            ListeningUDP=@(Get-NetUDPEndpoint |
+              Where-Object {$_.LocalAddress -notmatch '^(127\.|::1)'} |
+              Select-Object -ExpandProperty LocalPort -Unique | Sort-Object)
+            HostsFile=@(Get-Content "$env:SystemRoot\System32\drivers\etc\hosts" |
+              Where-Object {$_ -notmatch '^\s*#' -and $_.Trim() -ne ''})
+            Proxy=(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyServer).ProxyServer
+          } | ConvertTo-Json -Depth 6 -Compress
+      register: b02
+      changed_when: false
+
+    # ======================================================================
+    # 03 - IDENTIDAD
+    # ======================================================================
+    - name: "[03/12] Usuarios, grupos y politica local"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+
+          # secedit exporta la politica de seguridad local en formato INI.
+          # Se usa /areas SECURITYPOLICY para NO incluir hashes ni secretos.
+          $secOut=@()
+          $tmp=Join-Path $env:TEMP "secpol_$([guid]::NewGuid()).inf"
+          secedit /export /areas SECURITYPOLICY /cfg $tmp /quiet | Out-Null
+          if(Test-Path $tmp){
+            $secOut=@(Get-Content $tmp | Where-Object {
+              $_.Trim() -ne '' -and $_ -notmatch '^\s*;' -and $_ -notmatch 'Unicode|signature' })
+            Remove-Item $tmp -Force
+          }
+
+          # Derechos de usuario (privilegios) por SID
+          $rights=@()
+          $tmp2=Join-Path $env:TEMP "rights_$([guid]::NewGuid()).inf"
+          secedit /export /areas USER_RIGHTS /cfg $tmp2 /quiet | Out-Null
+          if(Test-Path $tmp2){
+            $rights=@(Get-Content $tmp2 | Where-Object { $_ -match '^Se\w+Privilege' })
+            Remove-Item $tmp2 -Force
+          }
+
+          @{
+            LocalUsers=@(Get-LocalUser | ForEach-Object {
+              @{ Name=$_.Name; SID=$_.SID.Value; Enabled=$_.Enabled
+                 Description=$_.Description
+                 PasswordNeverExpires=$_.PasswordNeverExpires
+                 PasswordRequired=$_.PasswordRequired
+                 PasswordLastSet=if($_.PasswordLastSet){$_.PasswordLastSet.ToString('s')}else{''}
+                 LastLogon=if($_.LastLogon){$_.LastLogon.ToString('s')}else{''}
+                 AccountExpires=if($_.AccountExpires){$_.AccountExpires.ToString('s')}else{''}
+                 UserMayChangePassword=$_.UserMayChangePassword } })
+            LocalGroups=@(Get-LocalGroup | ForEach-Object {
+              $g=$_
+              @{ Name=$g.Name; SID=$g.SID.Value; Description=$g.Description
+                 Members=@(Get-LocalGroupMember -Group $g.Name -ErrorAction SilentlyContinue |
+                   ForEach-Object { @{ Name=$_.Name; SID=$_.SID.Value
+                      Source=$_.PrincipalSource.ToString()
+                      Type=$_.ObjectClass } }) } })
+            SecurityPolicy=$secOut
+            UserRights=$rights
+            NetAccounts=@(net accounts)
+            Profiles=@(Get-CimInstance Win32_UserProfile |
+              Where-Object {-not $_.Special} | ForEach-Object {
+              @{ Path=$_.LocalPath; SID=$_.SID; Loaded=$_.Loaded
+                 LastUse=if($_.LastUseTime){$_.LastUseTime.ToString('s')}else{''} } })
+            LoggedOn=@(Get-CimInstance Win32_LoggedOnUser | ForEach-Object {
+              $_.Antecedent.Name } | Sort-Object -Unique)
+          } | ConvertTo-Json -Depth 6 -Compress
+      register: b03
+      changed_when: false
+
+    # ======================================================================
+    # 04 - SERVICIOS
+    # ======================================================================
+    - name: "[04/12] Servicios"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          $wmi=@{}
+          Get-CimInstance Win32_Service | ForEach-Object { $wmi[$_.Name]=$_ }
+          @{
+            Services=@(Get-Service | ForEach-Object {
+              $w=$wmi[$_.Name]
+              @{ Name=$_.Name; Display=$_.DisplayName
+                 Status=$_.Status.ToString(); StartType=$_.StartType.ToString()
+                 Account=if($w){$w.StartName}else{''}
+                 Path=if($w){$w.PathName}else{''}
+                 Delayed=if($w){$w.DelayedAutoStart}else{$false} } })
+            Drivers=@(Get-CimInstance Win32_SystemDriver |
+              Where-Object {$_.State -eq 'Running' -and $_.StartMode -ne 'Boot'} |
+              ForEach-Object { @{ Name=$_.Name; Path=$_.PathName; Start=$_.StartMode } })
+          } | ConvertTo-Json -Depth 5 -Compress
+      register: b04
+      changed_when: false
+
+    # ======================================================================
+    # 05 - SOFTWARE
+    # ======================================================================
+    - name: "[05/12] Software, roles y parches"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          $paths=@(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+          $sw=@(Get-ItemProperty $paths |
+            Where-Object {$_.DisplayName} |
+            ForEach-Object { @{ Name=$_.DisplayName; Version=$_.DisplayVersion
+               Publisher=$_.Publisher; Installed=$_.InstallDate } } |
+            Sort-Object {$_.Name})
+
+          $feats=@()
+          if(Get-Command Get-WindowsFeature -ErrorAction SilentlyContinue){
+            $feats=@(Get-WindowsFeature | Where-Object {$_.Installed} |
+              ForEach-Object { @{ Name=$_.Name; Display=$_.DisplayName
+                 Type=$_.FeatureType; Path=$_.Path } })
+          }
+          $optional=@(Get-WindowsOptionalFeature -Online |
+            Where-Object {$_.State -eq 'Enabled'} |
+            ForEach-Object { $_.FeatureName })
+
+          @{
+            Software=$sw
+            SoftwareCount=$sw.Count
+            Features=$feats
+            OptionalFeatures=$optional
+            Hotfixes=@(Get-HotFix | Sort-Object InstalledOn -Descending |
+              ForEach-Object { @{ ID=$_.HotFixID; Type=$_.Description
+                 Installed=if($_.InstalledOn){$_.InstalledOn.ToString('yyyy-MM-dd')}else{''} } })
+            WUConfig=@{
+              Service=(Get-Service wuauserv).StartType.ToString()
+              AUOptions=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update' -Name AUOptions).AUOptions
+              WSUSServer=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' -Name WUServer).WUServer
+              NoAutoUpdate=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate).NoAutoUpdate
+            }
+          } | ConvertTo-Json -Depth 5 -Compress
+      register: b05
+      changed_when: false
+
+    # ======================================================================
+    # 06 - TAREAS Y ARRANQUE
+    # ======================================================================
+    - name: "[06/12] Tareas programadas y arranque"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          @{
+            ScheduledTasks=@(Get-ScheduledTask |
+              Where-Object {$_.TaskPath -notlike '\Microsoft\Windows\*'} |
+              ForEach-Object {
+                $i=Get-ScheduledTaskInfo -TaskName $_.TaskName -TaskPath $_.TaskPath -ErrorAction SilentlyContinue
+                @{ Name=$_.TaskName; Path=$_.TaskPath; State=$_.State.ToString()
+                   Author=$_.Author
+                   User=$_.Principal.UserId; RunLevel=$_.Principal.RunLevel.ToString()
+                   Actions=@($_.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join ' ;; '
+                   Triggers=@($_.Triggers | ForEach-Object { $_.CimClass.CimClassName }) -join ','
+                   LastRun=if($i.LastRunTime){$i.LastRunTime.ToString('s')}else{''}
+                   LastResult=$i.LastTaskResult } })
+            StartupCommands=@(Get-CimInstance Win32_StartupCommand |
+              ForEach-Object { @{ Name=$_.Name; Command=$_.Command
+                 Location=$_.Location; User=$_.User } })
+            RunKeys=@(
+              'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+              'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+              'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+            ) | ForEach-Object {
+              $k=$_
+              if(Test-Path $k){
+                (Get-Item $k).Property | ForEach-Object {
+                  @{ Key=$k; Name=$_; Value=(Get-ItemProperty $k -Name $_).$_ } } } }
+          } | ConvertTo-Json -Depth 5 -Compress
+      register: b06
+      changed_when: false
+
+    # ======================================================================
+    # 07 - FIREWALL
+    # ======================================================================
+    - name: "[07/12] Firewall"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          $rules=Get-NetFirewallRule -Enabled True -Direction Inbound |
+                 Where-Object {$_.Action -eq 'Allow'}
+          $pf=@{}; Get-NetFirewallPortFilter | ForEach-Object { $pf[$_.InstanceID]=$_ }
+          $af=@{}; Get-NetFirewallAddressFilter | ForEach-Object { $af[$_.InstanceID]=$_ }
+          $apf=@{}; Get-NetFirewallApplicationFilter | ForEach-Object { $apf[$_.InstanceID]=$_ }
+
+          @{
+            Profiles=@(Get-NetFirewallProfile | ForEach-Object {
+              @{ Name=$_.Name; Enabled=[bool]$_.Enabled
+                 DefaultInbound=$_.DefaultInboundAction.ToString()
+                 DefaultOutbound=$_.DefaultOutboundAction.ToString()
+                 LogBlocked=[bool]$_.LogBlocked; LogAllowed=[bool]$_.LogAllowed
+                 LogFile=$_.LogFileName; LogMaxKB=$_.LogMaxSizeKilobytes
+                 NotifyOnBlock=[bool]$_.NotifyOnListen } })
+            InboundAllowRules=@($rules | ForEach-Object {
+              $id=$_.InstanceID
+              @{ Name=$_.DisplayName; Group=$_.DisplayGroup
+                 Profile=$_.Profile.ToString()
+                 Protocol=if($pf[$id]){$pf[$id].Protocol}else{''}
+                 LocalPort=if($pf[$id]){($pf[$id].LocalPort -join ',')}else{''}
+                 RemoteAddress=if($af[$id]){($af[$id].RemoteAddress -join ',')}else{''}
+                 Program=if($apf[$id]){$apf[$id].Program}else{''} } })
+            InboundAllowCount=@($rules).Count
+            TotalRules=@(Get-NetFirewallRule).Count
+          } | ConvertTo-Json -Depth 5 -Compress
+      register: b07
+      changed_when: false
+
+    # ======================================================================
+    # 08 - ACCESO REMOTO
+    # ======================================================================
+    - name: "[08/12] SSH, RDP y WinRM"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+
+          $cfg='C:\ProgramData\ssh\sshd_config'
+          $cfgLines=@()
+          if(Test-Path $cfg){
+            # Configuracion efectiva: sin comentarios ni lineas vacias
+            $cfgLines=@(Get-Content $cfg | Where-Object {
+              $_.Trim() -ne '' -and $_ -notmatch '^\s*#' })
+          }
+
+          # Presencia y ACL de archivos de claves. NUNCA el contenido.
+          function KeyInfo($p){
+            if(-not (Test-Path $p)){ return @{ Present=$false } }
+            $f=Get-Item $p
+            @{ Present=$true; SizeBytes=$f.Length
+               Modified=$f.LastWriteTime.ToString('s')
+               SHA256=(Get-FileHash $p -Algorithm SHA256).Hash
+               KeyCount=@(Get-Content $p | Where-Object {$_.Trim() -ne ''}).Count
+               Owner=(Get-Acl $p).Owner
+               ACL=@((Get-Acl $p).Access | ForEach-Object {
+                 "$($_.IdentityReference)=$($_.FileSystemRights)" }) }
+          }
+
+          @{
+            SSH=@{
+              ServiceStatus=(Get-Service sshd).Status.ToString()
+              ServiceStart=(Get-Service sshd).StartType.ToString()
+              AgentStatus=(Get-Service ssh-agent).Status.ToString()
+              ConfigPresent=(Test-Path $cfg)
+              ConfigLines=$cfgLines
+              ConfigHash=if(Test-Path $cfg){(Get-FileHash $cfg -Algorithm SHA256).Hash}else{''}
+              DefaultShell=(Get-ItemProperty 'HKLM:\SOFTWARE\OpenSSH' -Name DefaultShell).DefaultShell
+              Version=(& "$env:SystemRoot\System32\OpenSSH\sshd.exe" -V 2>&1 | Out-String).Trim()
+              AdminKeysFile=(KeyInfo (Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'))
+              UserKeyFiles=@(Get-ChildItem 'C:\Users\*\.ssh\authorized_keys' |
+                ForEach-Object { @{ User=($_.FullName -split '\\')[2]; Info=(KeyInfo $_.FullName) } })
+              HostKeys=@(Get-ChildItem (Join-Path $env:ProgramData 'ssh\ssh_host_*_key.pub') |
+                ForEach-Object { @{ Name=$_.Name; Size=$_.Length } })
+            }
+            RDP=@{
+              Enabled=((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections).fDenyTSConnections -eq 0)
+              NLA=((Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication).UserAuthentication -eq 1)
+              Port=(Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name PortNumber).PortNumber
+              SecurityLayer=(Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer).SecurityLayer
+              MinEncryption=(Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name MinEncryptionLevel).MinEncryptionLevel
+              IdleTimeout=(Get-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name MaxIdleTime).MaxIdleTime
+              RDUsers=@(Get-LocalGroupMember -SID 'S-1-5-32-555' -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Name })
+            }
+            WinRM=@{
+              Status=(Get-Service WinRM).Status.ToString()
+              StartType=(Get-Service WinRM).StartType.ToString()
+              Listeners=@(winrm enumerate winrm/config/listener 2>$null)
+              AllowUnencrypted=(Get-Item WSMan:\localhost\Service\AllowUnencrypted).Value
+              BasicAuth=(Get-Item WSMan:\localhost\Service\Auth\Basic).Value
+            }
+          } | ConvertTo-Json -Depth 7 -Compress
+      register: b08
+      changed_when: false
+
+    # ======================================================================
+    # 09 - SEGURIDAD
+    # ======================================================================
+    - name: "[09/12] Defender, BitLocker, protocolos y UAC"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+
+          function RegVal($p,$n){ (Get-ItemProperty -Path $p -Name $n -ErrorAction SilentlyContinue).$n }
+          $schannel='HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols'
+
+          $proto=@{}
+          foreach($p in @('SSL 2.0','SSL 3.0','TLS 1.0','TLS 1.1','TLS 1.2','TLS 1.3')){
+            foreach($r in @('Server','Client')){
+              $proto["$p/$r"]=@{
+                Enabled=RegVal "$schannel\$p\$r" 'Enabled'
+                DisabledByDefault=RegVal "$schannel\$p\$r" 'DisabledByDefault' }
+            }
+          }
+
+          $mp=Get-MpComputerStatus
+          $pref=Get-MpPreference
+
+          @{
+            Defender=@{
+              AMServiceEnabled=[bool]$mp.AMServiceEnabled
+              RealTimeProtection=[bool]$mp.RealTimeProtectionEnabled
+              BehaviorMonitor=[bool]$mp.BehaviorMonitorEnabled
+              IoavProtection=[bool]$mp.IoavProtectionEnabled
+              OnAccessProtection=[bool]$mp.OnAccessProtectionEnabled
+              TamperProtected=[bool]$mp.IsTamperProtected
+              AVSignatureVersion=$mp.AntivirusSignatureVersion
+              AVSignatureAge=$mp.AntivirusSignatureAge
+              LastQuickScan=if($mp.QuickScanEndTime){$mp.QuickScanEndTime.ToString('s')}else{''}
+              LastFullScan=if($mp.FullScanEndTime){$mp.FullScanEndTime.ToString('s')}else{''}
+              ExclusionPath=@($pref.ExclusionPath)
+              ExclusionExtension=@($pref.ExclusionExtension)
+              ExclusionProcess=@($pref.ExclusionProcess)
+              MAPSReporting=$pref.MAPSReporting.ToString()
+              SubmitSamples=$pref.SubmitSamplesConsent.ToString()
+              CloudLevel=$pref.CloudBlockLevel.ToString()
+              PUAProtection=$pref.PUAProtection.ToString()
+              ASRRules=@($pref.AttackSurfaceReductionRules_Ids)
+              ASRActions=@($pref.AttackSurfaceReductionRules_Actions)
+              ControlledFolderAccess=$pref.EnableControlledFolderAccess.ToString()
+              NetworkProtection=$pref.EnableNetworkProtection.ToString()
+            }
+            BitLocker=@(Get-BitLockerVolume -ErrorAction SilentlyContinue | ForEach-Object {
+              @{ Mount=$_.MountPoint; Protection=$_.ProtectionStatus.ToString()
+                 Encryption=$_.EncryptionMethod.ToString()
+                 Percent=$_.EncryptionPercentage
+                 Protectors=@($_.KeyProtector | ForEach-Object { $_.KeyProtectorType.ToString() }) } })
+            TPM=@{
+              Present=(Get-Tpm).TpmPresent
+              Ready=(Get-Tpm).TpmReady
+              Enabled=(Get-Tpm).TpmEnabled
+            }
+            Protocols=$proto
+            Ciphers=@(Get-TlsCipherSuite | ForEach-Object { $_.Name })
+            SMB=@{
+              ServerSigningRequired=[bool](Get-SmbServerConfiguration).RequireSecuritySignature
+              ServerSigningEnabled=[bool](Get-SmbServerConfiguration).EnableSecuritySignature
+              SMB1=[bool](Get-SmbServerConfiguration).EnableSMB1Protocol
+              SMB2=[bool](Get-SmbServerConfiguration).EnableSMB2Protocol
+              EncryptData=[bool](Get-SmbServerConfiguration).EncryptData
+              ClientSigningRequired=[bool](Get-SmbClientConfiguration).RequireSecuritySignature
+            }
+            LSA=@{
+              LmCompatibilityLevel=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LmCompatibilityLevel'
+              NoLMHash=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'NoLMHash'
+              RestrictAnonymous=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RestrictAnonymous'
+              RestrictAnonymousSAM=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RestrictAnonymousSAM'
+              RunAsPPL=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'RunAsPPL'
+              DisableDomainCreds=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'DisableDomainCreds'
+              EveryoneIncludesAnonymous=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'EveryoneIncludesAnonymous'
+              LimitBlankPasswordUse=RegVal 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' 'LimitBlankPasswordUse'
+            }
+            UAC=@{
+              EnableLUA=RegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
+              ConsentPromptAdmin=RegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptBehaviorAdmin'
+              ConsentPromptUser=RegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'ConsentPromptBehaviorUser'
+              SecureDesktop=RegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'PromptOnSecureDesktop'
+              FilterAdminToken=RegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'FilterAdministratorToken'
+              LocalAccountTokenFilter=RegVal 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'LocalAccountTokenFilterPolicy'
+            }
+            PowerShell=@{
+              ExecutionPolicy=@(Get-ExecutionPolicy -List | ForEach-Object {
+                "$($_.Scope)=$($_.ExecutionPolicy)" })
+              V2Enabled=((Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2).State -eq 'Enabled')
+              LanguageMode=$ExecutionContext.SessionState.LanguageMode.ToString()
+            }
+            Certificates=@(Get-ChildItem Cert:\LocalMachine\My | ForEach-Object {
+              @{ Subject=$_.Subject; Issuer=$_.Issuer
+                 NotAfter=$_.NotAfter.ToString('s')
+                 DaysLeft=[math]::Round(($_.NotAfter-(Get-Date)).TotalDays,0)
+                 Thumbprint=$_.Thumbprint; HasPrivateKey=$_.HasPrivateKey } })
+          } | ConvertTo-Json -Depth 7 -Compress
+      register: b09
+      changed_when: false
+
+    # ======================================================================
+    # 10 - AUDITORIA Y LOGS
+    # ======================================================================
+    - name: "[10/12] Politica de auditoria y logs"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+
+          # auditpol /r devuelve CSV: Machine,Category,Subcategory,GUID,Setting
+          $audit=@()
+          $out=auditpol /get /category:* /r 2>$null
+          if($out){
+            $audit=@($out | Select-Object -Skip 1 | Where-Object {$_.Trim() -ne ''} |
+              ForEach-Object {
+                $c=$_ -split ','
+                if($c.Count -ge 5){ @{ Category=$c[1]; Subcategory=$c[2]; Setting=$c[4] } } })
+          }
+
+          @{
+            AuditPolicy=$audit
+            EventLogs=@(Get-WinEvent -ListLog Application,Security,System,Setup,'Microsoft-Windows-PowerShell/Operational','OpenSSH/Operational' -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                @{ Name=$_.LogName; Enabled=$_.IsEnabled
+                   MaxMB=[math]::Round($_.MaximumSizeInBytes/1MB,0)
+                   Mode=$_.LogMode.ToString()
+                   Records=$_.RecordCount
+                   FilePath=$_.LogFilePath } })
+            PSLogging=@{
+              ScriptBlock=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockLogging).EnableScriptBlockLogging
+              ScriptBlockInvocation=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockInvocationLogging).EnableScriptBlockInvocationLogging
+              ModuleLogging=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging' -Name EnableModuleLogging).EnableModuleLogging
+              Transcription=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name EnableTranscripting).EnableTranscripting
+              TranscriptDir=(Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription' -Name OutputDirectory).OutputDirectory
+            }
+            CommandLineAudit=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit' -Name ProcessCreationIncludeCmdLine_Enabled).ProcessCreationIncludeCmdLine_Enabled
+            Sysmon=@{
+              ServicePresent=[bool](Get-Service Sysmon,Sysmon64 -ErrorAction SilentlyContinue)
+              Status=(Get-Service Sysmon,Sysmon64 -ErrorAction SilentlyContinue | Select-Object -First 1).Status.ToString()
+            }
+            RecentSecurityEvents=@(Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625} -MaxEvents 5 -ErrorAction SilentlyContinue |
+              ForEach-Object { @{ Time=$_.TimeCreated.ToString('s'); Id=$_.Id } })
+          } | ConvertTo-Json -Depth 6 -Compress
+      register: b10
+      changed_when: false
+
+    # ======================================================================
+    # 11 - REGISTRO DE POLITICAS
+    # ======================================================================
+    - name: "[11/12] Volcado de claves de politica"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+
+          # Enumera recursivamente las ramas de politica mas relevantes.
+          # Se limita la profundidad para evitar volcados de cientos de MB.
+          $roots=@(
+            'HKLM:\SOFTWARE\Policies\Microsoft\Windows',
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies',
+            'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server',
+            'HKLM:\SYSTEM\CurrentControlSet\Services\LanManServer\Parameters',
+            'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters',
+            'HKLM:\SYSTEM\CurrentControlSet\Control\Print',
+            'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender',
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background'
+          )
+
+          $dump=@()
+          foreach($r in $roots){
+            if(-not (Test-Path $r)){ continue }
+            $keys=@($r) + @(Get-ChildItem $r -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+                            ForEach-Object { $_.PSPath })
+            foreach($k in $keys){
+              $item=Get-Item $k -ErrorAction SilentlyContinue
+              if(-not $item){ continue }
+              foreach($p in $item.Property){
+                $v=(Get-ItemProperty -Path $k -Name $p -ErrorAction SilentlyContinue).$p
+                if($v -is [byte[]]){ $v="<binary:$($v.Length)bytes>" }
+                if($v -is [array]) { $v=($v -join ';') }
+                $dump += @{
+                  Key=($k -replace '^Microsoft\.PowerShell\.Core\\Registry::','')
+                  Name=$p
+                  Value=[string]$v
+                }
+              }
+            }
+          }
+
+          @{ RegistryPolicies=$dump; Count=$dump.Count } |
+            ConvertTo-Json -Depth 4 -Compress
+      register: b11
+      changed_when: false
+
+    # ======================================================================
+    # 12 - GPO, TIEMPO Y ENTORNO
+    # ======================================================================
+    - name: "[12/12] GPO, tiempo y entorno"
+      ansible.windows.win_powershell:
+        script: |
+          $ErrorActionPreference='SilentlyContinue'; $ProgressPreference='SilentlyContinue'
+          $gp=@()
+          $g=gpresult /r /scope:computer 2>$null
+          if($g){ $gp=@($g | Where-Object {$_.Trim() -ne ''}) }
+
+          @{
+            GPResult=$gp
+            Time=@{
+              TimeZone=(Get-TimeZone).Id
+              TimeZoneOffset=(Get-TimeZone).BaseUtcOffset.ToString()
+              LocalTime=(Get-Date).ToString('s')
+              UTCTime=(Get-Date).ToUniversalTime().ToString('s')
+              NTPSource=(w32tm /query /source 2>$null | Select-Object -First 1)
+              NTPConfig=@(w32tm /query /configuration 2>$null |
+                Where-Object {$_ -match 'NtpServer|Type:|SpecialPollInterval'})
+              W32TimeService=(Get-Service W32Time).Status.ToString()
+            }
+            Environment=@{
+              SystemPath=($env:Path -split ';')
+              ComputerName=$env:COMPUTERNAME
+              ProcessorCount=$env:NUMBER_OF_PROCESSORS
+              TempDir=$env:TEMP
+            }
+            PendingReboot=@{
+              CBS=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending')
+              WU=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+              FileRename=($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue))
+            }
+            CollectedAt=(Get-Date -Format 's')
+          } | ConvertTo-Json -Depth 6 -Compress
+      register: b12
+      changed_when: false
+
+    # ======================================================================
+    # ENSAMBLADO EN EL CONTROLADOR
+    # ======================================================================
+    - name: "Asegurar directorio de volcado"
+      ansible.builtin.file:
+        path: "{{ dump_dir }}/{{ dump_stamp }}"
+        state: directory
+        mode: '0750'
+      delegate_to: localhost
+
+    - name: "Escribir JSON por host"
+      ansible.builtin.copy:
+        dest: "{{ dump_dir }}/{{ dump_stamp }}/{{ inventory_hostname }}.json"
+        mode: '0640'
+        content: |
+          {
+            "_meta": {
+              "inventory_hostname": {{ inventory_hostname | to_json }},
+              "ansible_host": {{ (ansible_host | default(inventory_hostname)) | to_json }},
+              "collected_at": {{ dump_stamp | to_json }},
+              "playbook_version": "1.0"
+            },
+            "system":      {{ b01.output[0] }},
+            "network":     {{ b02.output[0] }},
+            "identity":    {{ b03.output[0] }},
+            "services":    {{ b04.output[0] }},
+            "software":    {{ b05.output[0] }},
+            "tasks":       {{ b06.output[0] }},
+            "firewall":    {{ b07.output[0] }},
+            "remote":      {{ b08.output[0] }},
+            "security":    {{ b09.output[0] }},
+            "audit":       {{ b10.output[0] }},
+            "registry":    {{ b11.output[0] }},
+            "environment": {{ b12.output[0] }}
+          }
+      delegate_to: localhost
+
+    - name: "Resumen por host"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} |
+          archivo={{ dump_dir }}/{{ dump_stamp }}/{{ inventory_hostname }}.json |
+          servicios={{ (b04.output[0] | from_json).Services | length }} |
+          software={{ (b05.output[0] | from_json).SoftwareCount }} |
+          reglas_fw={{ (b07.output[0] | from_json).InboundAllowCount }} |
+          registro={{ (b11.output[0] | from_json).Count }} valores
+
+  post_tasks:
+    - name: "Generar indice del volcado"
+      ansible.builtin.copy:
+        dest: "{{ dump_dir }}/{{ dump_stamp }}/_index.json"
+        mode: '0640'
+        content: |
+          {
+            "collected_at": {{ dump_stamp | to_json }},
+            "host_count": {{ ansible_play_hosts | length }},
+            "hosts": {{ ansible_play_hosts | to_json }},
+            "files": {{ ansible_play_hosts | map('regex_replace', '$', '.json') | list | to_json }}
+          }
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Ubicacion del volcado"
+      ansible.builtin.debug:
+        msg:
+          - "Directorio: {{ dump_dir }}/{{ dump_stamp }}/"
+          - "Hosts: {{ ansible_play_hosts | length }}"
+          - "Un archivo JSON por host + _index.json"
+          - "Para empaquetar: tar czf baseline-{{ dump_stamp }}.tar.gz -C {{ dump_dir }} {{ dump_stamp }}"
+          - "CONFIDENCIAL: no subir estos archivos al repositorio."
+      run_once: true
