@@ -1,94 +1,173 @@
 ---
 # ============================================================================
-# Drakos Cave SOC - Activar fondo personalizado de inicio de sesion
+# Drakos Cave SOC - Fondo de pantalla de bloqueo / inicio de sesion
 # Fecha: 2026-09-17
-# Version: v2 (lectura de firma compatible con Windows PowerShell 5.1)
+# Version: v3
 #
-# Usar cuando backgroundDefault.jpg YA esta copiado en los hosts.
-# Este playbook no transfiere archivos: solo habilita OEMBackground
-# y verifica que la imagen exista y cumpla el limite de Windows.
+# IMPORTANTE - por que el metodo anterior no funciono:
+#   OEMBackground + C:\Windows\System32\oobe\info\backgrounds\ es un mecanismo
+#   de Windows 7. Desde Windows 8 / Server 2012 el sistema lo ignora.
+#   El metodo vigente en Windows 10/11 y Server 2016-2025 es la politica
+#   de Personalizacion: LockScreenImage.
 #
-#   ansible-playbook -i inventory enable_logon_background.yml
-#   ansible-playbook -i inventory enable_logon_background.yml -e "oem_state=0"
+# Registro que se aplica:
+#   HKLM\SOFTWARE\Policies\Microsoft\Windows\Personalization
+#     - LockScreenImage        (REG_SZ)  -> ruta absoluta de la imagen
+#     - LockScreenOverlaysDisabled (DWORD) -> quita overlays de apps
+#   HKLM\SOFTWARE\Policies\Microsoft\Windows\System
+#     - DisableAcrylicBackgroundOnLogon (DWORD) -> quita el desenfoque acrilico
+#
+# NOTA DE VERIFICACION: la pantalla de bloqueo NO se ve por RDP.
+# Hay que validar en la consola fisica o en la consola de la VM.
+#
+#   ansible-playbook -i inventory set_lockscreen_image.yml
+#   ansible-playbook -i inventory set_lockscreen_image.yml -e "lockscreen_state=absent"
 # ============================================================================
-- name: Drakos SOC - Activar fondo de logon (imagen ya desplegada)
+- name: Drakos SOC - Configurar imagen de pantalla de bloqueo
   hosts: windows
   gather_facts: no
 
   vars:
-    # 1 = fondo personalizado activo | 0 = vuelve al fondo por defecto
-    oem_state: 1
-    logonui_regpath: 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background'
-    background_dst: 'C:\Windows\System32\oobe\info\backgrounds\backgroundDefault.jpg'
+    lockscreen_state: present
+
+    # Ruta de origen: la imagen ya desplegada por el metodo anterior.
+    # Se reutiliza para no volver a transferir archivos (SFTP/SCP falla).
+    source_image: 'C:\Windows\System32\oobe\info\backgrounds\backgroundDefault.jpg'
+
+    # Destino definitivo. Fuera de System32 para evitar que Windows Update
+    # o un sfc /scannow lo sobrescriban.
+    image_dir: 'C:\ProgramData\DrakosCave'
+    image_path: 'C:\ProgramData\DrakosCave\lockscreen.jpg'
+
+    personalization_key: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    system_key: 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+
+    # 1 = quita el desenfoque acrilico del logon (imagen nitida)
+    disable_acrylic: 1
 
   tasks:
-    - name: "[1/3] Verificar que la imagen existe y cumple el limite de 256 KB"
+    - name: "[1/6] Crear directorio de recursos de Drakos Cave"
+      ansible.windows.win_file:
+        path: "{{ image_dir }}"
+        state: directory
+      when: lockscreen_state == 'present'
+
+    - name: "[2/6] Mover la imagen a su ubicacion definitiva"
       ansible.windows.win_powershell:
         script: |
-          $img = '{{ background_dst }}'
-          $f = Get-Item -Path $img -ErrorAction SilentlyContinue
+          $src = '{{ source_image }}'
+          $dst = '{{ image_path }}'
 
-          $isJpeg = $false
-          $sig    = ''
-          if ($f -and $f.Length -ge 3) {
-            # .NET en lugar de Get-Content -AsByteStream: ese parametro solo
-            # existe en PowerShell 7. Server 2025 corre Windows PowerShell 5.1.
-            $fs = [System.IO.File]::OpenRead($img)
-            try {
-              $b = New-Object byte[] 3
-              [void]$fs.Read($b, 0, 3)
-              $sig = ($b | ForEach-Object { $_.ToString('X2') }) -join ' '
-              # Firma JPEG: FF D8 FF. Detecta un PNG renombrado.
-              $isJpeg = ($b[0] -eq 0xFF -and $b[1] -eq 0xD8 -and $b[2] -eq 0xFF)
-            } finally {
-              $fs.Close()
-              $fs.Dispose()
-            }
+          if (-not (Test-Path $src)) {
+            throw "No se encontro la imagen de origen: $src"
+          }
+
+          $needsCopy = $true
+          if (Test-Path $dst) {
+            $hSrc = (Get-FileHash $src -Algorithm SHA256).Hash
+            $hDst = (Get-FileHash $dst -Algorithm SHA256).Hash
+            $needsCopy = ($hSrc -ne $hDst)
+          }
+
+          if ($needsCopy) {
+            Copy-Item -Path $src -Destination $dst -Force
+          }
+
+          # LogonUI corre como usuario del sistema y debe poder leer el archivo.
+          # Sin lectura para Users, la pantalla queda en negro sin aviso.
+          $acl = Get-Acl -Path $dst
+          $acl.SetAccessRuleProtection($false, $true)
+          $sidUsers = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-545')
+          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+              $sidUsers, 'Read', 'None', 'None', 'Allow')
+          $acl.AddAccessRule($rule)
+          Set-Acl -Path $dst -AclObject $acl
+
+          @{
+            Copied  = $needsCopy
+            SizeKB  = [math]::Round((Get-Item $dst).Length / 1KB, 1)
+            Path    = $dst
+          }
+      register: img_move
+      changed_when: img_move.output[0].Copied
+      when: lockscreen_state == 'present'
+
+    - name: "[3/6] Aplicar politica LockScreenImage"
+      ansible.windows.win_regedit:
+        path: "{{ personalization_key }}"
+        name: LockScreenImage
+        data: "{{ image_path }}"
+        type: string
+        state: "{{ lockscreen_state }}"
+      register: policy_result
+
+    - name: "[4/6] Deshabilitar overlays sobre la pantalla de bloqueo"
+      ansible.windows.win_regedit:
+        path: "{{ personalization_key }}"
+        name: LockScreenOverlaysDisabled
+        data: 1
+        type: dword
+        state: "{{ lockscreen_state }}"
+
+    - name: "[5/6] Quitar desenfoque acrilico del logon (imagen nitida)"
+      ansible.windows.win_regedit:
+        path: "{{ system_key }}"
+        name: DisableAcrylicBackgroundOnLogon
+        data: "{{ disable_acrylic }}"
+        type: dword
+        state: "{{ lockscreen_state }}"
+
+    - name: "[6/6] Verificar configuracion aplicada"
+      ansible.windows.win_powershell:
+        script: |
+          $pKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+          $sKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\System'
+          $img  = '{{ image_path }}'
+
+          $lsi = (Get-ItemProperty -Path $pKey -Name LockScreenImage -ErrorAction SilentlyContinue).LockScreenImage
+          $acr = (Get-ItemProperty -Path $sKey -Name DisableAcrylicBackgroundOnLogon -ErrorAction SilentlyContinue).DisableAcrylicBackgroundOnLogon
+          $f   = Get-Item -Path $img -ErrorAction SilentlyContinue
+
+          # Confirma que el grupo Users puede leer la imagen
+          $canRead = $false
+          if ($f) {
+            $acl = Get-Acl -Path $img
+            $canRead = [bool]($acl.Access | Where-Object {
+              $_.IdentityReference -match 'Users|Usuarios|TODOS|Everyone' -and
+              $_.FileSystemRights -match 'Read|FullControl' -and
+              $_.AccessControlType -eq 'Allow'
+            })
           }
 
           @{
-            Present  = [bool]$f
-            SizeKB   = if ($f) { [math]::Round($f.Length / 1KB, 1) } else { 0 }
-            UnderCap = if ($f) { $f.Length -lt 262144 } else { $false }
-            IsJpeg   = $isJpeg
-            Signature = if ($sig) { $sig } else { '(no leida)' }
+            Host           = $env:COMPUTERNAME
+            PolicyPath     = if ($lsi) { $lsi } else { '(no configurado)' }
+            ImageExists    = [bool]$f
+            ImageKB        = if ($f) { [math]::Round($f.Length / 1KB, 1) } else { 0 }
+            UsersCanRead   = $canRead
+            AcrylicDisabled = if ($null -ne $acr) { $acr } else { '(ausente)' }
+            PathsMatch     = ($lsi -eq $img)
           }
-      register: img_check
+      register: verify
       changed_when: false
-
-    - name: "[2/3] Abortar si la imagen no es valida"
-      ansible.builtin.assert:
-        that:
-          - img_check.output[0].Present | bool
-          - img_check.output[0].UnderCap | bool
-          - img_check.output[0].IsJpeg | bool
-        fail_msg: >-
-          Imagen invalida en {{ inventory_hostname }}:
-          presente={{ img_check.output[0].Present }},
-          {{ img_check.output[0].SizeKB }} KB,
-          bajo_limite={{ img_check.output[0].UnderCap }},
-          jpeg_real={{ img_check.output[0].IsJpeg }},
-          firma='{{ img_check.output[0].Signature }}' (esperada 'FF D8 FF').
-          Windows la ignoraria en silencio.
-        success_msg: >-
-          Imagen valida ({{ img_check.output[0].SizeKB }} KB,
-          firma {{ img_check.output[0].Signature }}).
-
-    - name: "[3/3] Habilitar OEMBackground en LogonUI"
-      ansible.windows.win_regedit:
-        path: "{{ logonui_regpath }}"
-        name: OEMBackground
-        data: "{{ oem_state }}"
-        type: dword
-        state: present
-      register: oem_result
 
     - name: "Reporte por host"
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }} |
-          imagen={{ img_check.output[0].SizeKB }} KB |
-          firma={{ img_check.output[0].Signature }} |
-          OEMBackground={{ oem_state }} |
-          cambio={{ oem_result.changed }} |
-          efectivo en el proximo inicio de sesion
+          politica='{{ verify.output[0].PolicyPath }}' |
+          imagen={{ verify.output[0].ImageKB }} KB
+          (existe={{ verify.output[0].ImageExists }},
+           lectura_users={{ verify.output[0].UsersCanRead }}) |
+          rutas_coinciden={{ verify.output[0].PathsMatch }} |
+          acrilico_off={{ verify.output[0].AcrylicDisabled }}
+
+  post_tasks:
+    - name: "Nota de verificacion"
+      ansible.builtin.debug:
+        msg:
+          - "La pantalla de bloqueo NO se muestra por RDP."
+          - "Valida en la consola fisica o en la consola de la VM."
+          - "Si no aparece de inmediato, ejecuta en el host: gpupdate /force"
+          - "En algunos casos requiere cerrar sesion o reiniciar LogonUI."
+      run_once: true
