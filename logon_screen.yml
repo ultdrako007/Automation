@@ -1,24 +1,30 @@
 ---
 # ============================================================================
-# Drakos Cave SOC - Homologacion del aviso legal de inicio de sesion
+# Drakos Cave SOC - Homologacion de la pantalla de inicio de sesion
 # Fecha: 2026-09-17
-# Version: v1
+# Version: v2 (banner de texto + fondo de pantalla)
 # Hosts: grupo [windows]
 #
-# Configura el banner de logon (legal notice) de Windows via registro:
-#   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
-#     - legalnoticecaption (REG_SZ) -> titulo del cuadro
-#     - legalnoticetext    (REG_SZ) -> cuerpo del mensaje
+# 1) Banner legal via registro:
+#    HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+#      - legalnoticecaption (REG_SZ)
+#      - legalnoticetext    (REG_SZ)
 #
-# El cuadro se muestra ANTES del prompt de credenciales, en todos los hosts.
-# No requiere reinicio: aplica en el siguiente inicio de sesion.
+# 2) Fondo de logon:
+#    C:\Windows\System32\oobe\info\backgrounds\backgroundDefault.jpg
+#    + HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\
+#        LogonUI\Background -> OEMBackground = 1
+#
+#    LIMITE DURO DE WINDOWS: el archivo debe pesar MENOS de 256 KB.
+#    Si excede, Windows lo ignora en silencio y muestra el fondo por defecto.
 #
 # Uso:
 #   ansible-playbook -i inventory set_logon_banner_horus.yml
 #   ansible-playbook -i inventory set_logon_banner_horus.yml --check --diff
+#   ansible-playbook -i inventory set_logon_banner_horus.yml -e "background_mode=url"
 #   ansible-playbook -i inventory set_logon_banner_horus.yml -e "banner_state=absent"
 # ============================================================================
-- name: Drakos SOC - Homologar aviso legal de inicio de sesion (Horus)
+- name: Drakos SOC - Homologar pantalla de inicio de sesion (Horus)
   hosts: windows
   gather_facts: yes
   serial: 5
@@ -28,6 +34,24 @@
     banner_state: present
 
     banner_regpath: 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+
+    # --- Fondo de pantalla de inicio de sesion ---------------------------
+    # 'copy' -> envia el archivo desde el repo clonado por Semaphore (usa SCP/SFTP)
+    # 'url'  -> el host lo descarga solo desde una URL (no requiere SCP/SFTP)
+    # 'skip' -> no toca el fondo, solo aplica el banner de texto
+    background_mode: copy
+
+    # Ruta relativa al playbook. Semaphore clona el repo completo, asi que el
+    # archivo viaja junto al YAML si lo pones en files/ del mismo repositorio.
+    background_src: 'files/backgroundDefault.jpg'
+
+    # Solo se usa cuando background_mode == 'url'
+    background_url: 'https://raw.githubusercontent.com/ultdrako007/Automation/main/files/backgroundDefault.jpg'
+
+    background_dir: 'C:\Windows\System32\oobe\info\backgrounds'
+    background_dst: 'C:\Windows\System32\oobe\info\backgrounds\backgroundDefault.jpg'
+
+    logonui_regpath: 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background'
 
     banner_caption: 'Drakos Cave ☠ XVI Legión — Hijos de Horus'
 
@@ -67,13 +91,16 @@
       — Drakos Cave // Dirección de Ciberseguridad 🖤⚙️
 
   tasks:
-    - name: "[1/5] Verificar que existe la ruta de politicas"
+    # ======================================================================
+    # BANNER DE TEXTO
+    # ======================================================================
+    - name: "[1/8] Verificar que existe la ruta de politicas"
       ansible.windows.win_regedit:
         path: "{{ banner_regpath }}"
         state: present
       when: banner_state == 'present'
 
-    - name: "[2/5] Configurar titulo del aviso (legalnoticecaption)"
+    - name: "[2/8] Configurar titulo del aviso (legalnoticecaption)"
       ansible.windows.win_regedit:
         path: "{{ banner_regpath }}"
         name: legalnoticecaption
@@ -82,49 +109,111 @@
         state: "{{ banner_state }}"
       register: caption_result
 
-    - name: "[3/5] Configurar cuerpo del aviso (legalnoticetext)"
+    - name: "[3/8] Configurar cuerpo del aviso (legalnoticetext)"
       ansible.windows.win_regedit:
         path: "{{ banner_regpath }}"
         name: legalnoticetext
-        # El trim final evita una linea en blanco extra al pie del cuadro
         data: "{{ banner_text | trim }}"
         type: string
         state: "{{ banner_state }}"
       register: text_result
 
-    - name: "[4/5] Leer valores aplicados para verificacion"
+    # ======================================================================
+    # FONDO DE PANTALLA DE LOGON
+    # ======================================================================
+    - name: "[4/8] Validar tamano del archivo de fondo (limite 256 KB)"
+      ansible.builtin.assert:
+        that:
+          - (lookup('ansible.builtin.file', background_src, rstrip=False) | length) < 262144
+        fail_msg: >-
+          El archivo '{{ background_src }}' supera los 256 KB. Windows lo
+          ignorara en silencio. Recomprime el JPEG antes de desplegar.
+        success_msg: "Tamano del fondo dentro del limite de Windows."
+      delegate_to: localhost
+      run_once: true
+      when:
+        - banner_state == 'present'
+        - background_mode == 'copy'
+
+    - name: "[5/8] Crear directorio de fondos de logon"
+      ansible.windows.win_file:
+        path: "{{ background_dir }}"
+        state: directory
+      when:
+        - banner_state == 'present'
+        - background_mode in ['copy', 'url']
+
+    - name: "[6a/8] Copiar fondo desde el repositorio"
+      ansible.windows.win_copy:
+        src: "{{ background_src }}"
+        dest: "{{ background_dst }}"
+      register: bg_copy
+      when:
+        - banner_state == 'present'
+        - background_mode == 'copy'
+
+    - name: "[6b/8] Descargar fondo desde URL (sin SCP/SFTP)"
+      ansible.windows.win_get_url:
+        url: "{{ background_url }}"
+        dest: "{{ background_dst }}"
+        force: yes
+      register: bg_download
+      when:
+        - banner_state == 'present'
+        - background_mode == 'url'
+
+    - name: "[7/8] Habilitar fondo personalizado en LogonUI (OEMBackground)"
+      ansible.windows.win_regedit:
+        path: "{{ logonui_regpath }}"
+        name: OEMBackground
+        data: "{{ 1 if banner_state == 'present' else 0 }}"
+        type: dword
+        state: present
+      when: background_mode != 'skip'
+
+    # ======================================================================
+    # VERIFICACION
+    # ======================================================================
+    - name: "[8/8] Leer configuracion aplicada"
       ansible.windows.win_powershell:
         script: |
-          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-          $caption = (Get-ItemProperty -Path $key -Name legalnoticecaption -ErrorAction SilentlyContinue).legalnoticecaption
-          $text    = (Get-ItemProperty -Path $key -Name legalnoticetext    -ErrorAction SilentlyContinue).legalnoticetext
+          $pol = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+          $bg  = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background'
+          $img = '{{ background_dst }}'
+
+          $caption = (Get-ItemProperty -Path $pol -Name legalnoticecaption -ErrorAction SilentlyContinue).legalnoticecaption
+          $text    = (Get-ItemProperty -Path $pol -Name legalnoticetext    -ErrorAction SilentlyContinue).legalnoticetext
+          $oem     = (Get-ItemProperty -Path $bg  -Name OEMBackground      -ErrorAction SilentlyContinue).OEMBackground
+          $file    = Get-Item -Path $img -ErrorAction SilentlyContinue
 
           @{
-            Host        = $env:COMPUTERNAME
-            Caption     = if ($caption) { $caption } else { '(no configurado)' }
-            TextLength  = if ($text) { $text.Length } else { 0 }
-            TextLines   = if ($text) { ($text -split "`n").Count } else { 0 }
-            FirstLine   = if ($text) { ($text -split "`r?`n")[0] } else { '(vacio)' }
-            Applied     = [bool]($caption -and $text)
+            Host          = $env:COMPUTERNAME
+            Caption       = if ($caption) { $caption } else { '(no configurado)' }
+            TextLength    = if ($text) { $text.Length } else { 0 }
+            OEMBackground = if ($null -ne $oem) { $oem } else { '(ausente)' }
+            ImagePresent  = [bool]$file
+            ImageKB       = if ($file) { [math]::Round($file.Length / 1KB, 1) } else { 0 }
+            ImageUnderCap = if ($file) { $file.Length -lt 262144 } else { $false }
           }
-      register: banner_check
+      register: logon_check
       changed_when: false
 
-    - name: "[5/5] Reporte por host"
+    - name: "Reporte por host"
       ansible.builtin.debug:
         msg: >-
           {{ inventory_hostname }} |
-          caption='{{ banner_check.output[0].Caption }}' |
-          {{ banner_check.output[0].TextLength }} caracteres,
-          {{ banner_check.output[0].TextLines }} lineas |
-          aplicado={{ banner_check.output[0].Applied }}
+          caption='{{ logon_check.output[0].Caption }}' |
+          texto={{ logon_check.output[0].TextLength }} chars |
+          OEMBackground={{ logon_check.output[0].OEMBackground }} |
+          imagen={{ logon_check.output[0].ImageKB }} KB
+          (presente={{ logon_check.output[0].ImagePresent }},
+           bajo_limite={{ logon_check.output[0].ImageUnderCap }})
 
   post_tasks:
     - name: "Resumen de homologacion"
       ansible.builtin.debug:
         msg:
           - "Banner {{ 'aplicado' if banner_state == 'present' else 'eliminado' }} en {{ inventory_hostname }}"
-          - "Cambio en caption: {{ caption_result.changed }}"
-          - "Cambio en text: {{ text_result.changed }}"
+          - "Cambio en caption: {{ caption_result.changed }} | texto: {{ text_result.changed }}"
+          - "Modo de fondo: {{ background_mode }}"
           - "Efectivo en el proximo inicio de sesion (no requiere reinicio)."
-      run_once: false
