@@ -1,0 +1,73 @@
+---
+# ============================================================================
+# Drakos Cave SOC - Activar fondo personalizado de inicio de sesion
+# Fecha: 2026-09-17
+#
+# Usar cuando backgroundDefault.jpg YA esta copiado en los hosts.
+# Este playbook no transfiere archivos: solo habilita OEMBackground
+# y verifica que la imagen exista y cumpla el limite de Windows.
+#
+#   ansible-playbook -i inventory enable_logon_background.yml
+#   ansible-playbook -i inventory enable_logon_background.yml -e "oem_state=0"
+# ============================================================================
+- name: Drakos SOC - Activar fondo de logon (imagen ya desplegada)
+  hosts: windows
+  gather_facts: no
+
+  vars:
+    # 1 = fondo personalizado activo | 0 = vuelve al fondo por defecto
+    oem_state: 1
+    logonui_regpath: 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI\Background'
+    background_dst: 'C:\Windows\System32\oobe\info\backgrounds\backgroundDefault.jpg'
+
+  tasks:
+    - name: "[1/3] Verificar que la imagen existe y cumple el limite de 256 KB"
+      ansible.windows.win_powershell:
+        script: |
+          $img = '{{ background_dst }}'
+          $f = Get-Item -Path $img -ErrorAction SilentlyContinue
+          @{
+            Present   = [bool]$f
+            SizeKB    = if ($f) { [math]::Round($f.Length / 1KB, 1) } else { 0 }
+            UnderCap  = if ($f) { $f.Length -lt 262144 } else { $false }
+            IsJpeg    = if ($f) {
+                          # Firma JPEG: FF D8 FF. Detecta un PNG renombrado.
+                          $b = Get-Content $img -AsByteStream -TotalCount 3 -ErrorAction SilentlyContinue
+                          ($b[0] -eq 0xFF -and $b[1] -eq 0xD8 -and $b[2] -eq 0xFF)
+                        } else { $false }
+          }
+      register: img_check
+      changed_when: false
+
+    - name: "[2/3] Abortar si la imagen no es valida"
+      ansible.builtin.assert:
+        that:
+          - img_check.output[0].Present
+          - img_check.output[0].UnderCap
+          - img_check.output[0].IsJpeg
+        fail_msg: >-
+          Imagen invalida en {{ inventory_hostname }}:
+          presente={{ img_check.output[0].Present }},
+          {{ img_check.output[0].SizeKB }} KB,
+          bajo_limite={{ img_check.output[0].UnderCap }},
+          jpeg_real={{ img_check.output[0].IsJpeg }}.
+          Windows la ignoraria en silencio.
+        success_msg: "Imagen valida ({{ img_check.output[0].SizeKB }} KB)."
+
+    - name: "[3/3] Habilitar OEMBackground en LogonUI"
+      ansible.windows.win_regedit:
+        path: "{{ logonui_regpath }}"
+        name: OEMBackground
+        data: "{{ oem_state }}"
+        type: dword
+        state: present
+      register: oem_result
+
+    - name: "Reporte por host"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} |
+          imagen={{ img_check.output[0].SizeKB }} KB |
+          OEMBackground={{ oem_state }} |
+          cambio={{ oem_result.changed }} |
+          efectivo en el proximo inicio de sesion
