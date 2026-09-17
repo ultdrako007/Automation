@@ -2,6 +2,7 @@
 # ============================================================================
 # Drakos Cave SOC - Activar fondo personalizado de inicio de sesion
 # Fecha: 2026-09-17
+# Version: v2 (lectura de firma compatible con Windows PowerShell 5.1)
 #
 # Usar cuando backgroundDefault.jpg YA esta copiado en los hosts.
 # Este playbook no transfiere archivos: solo habilita OEMBackground
@@ -26,15 +27,31 @@
         script: |
           $img = '{{ background_dst }}'
           $f = Get-Item -Path $img -ErrorAction SilentlyContinue
+
+          $isJpeg = $false
+          $sig    = ''
+          if ($f -and $f.Length -ge 3) {
+            # .NET en lugar de Get-Content -AsByteStream: ese parametro solo
+            # existe en PowerShell 7. Server 2025 corre Windows PowerShell 5.1.
+            $fs = [System.IO.File]::OpenRead($img)
+            try {
+              $b = New-Object byte[] 3
+              [void]$fs.Read($b, 0, 3)
+              $sig = ($b | ForEach-Object { $_.ToString('X2') }) -join ' '
+              # Firma JPEG: FF D8 FF. Detecta un PNG renombrado.
+              $isJpeg = ($b[0] -eq 0xFF -and $b[1] -eq 0xD8 -and $b[2] -eq 0xFF)
+            } finally {
+              $fs.Close()
+              $fs.Dispose()
+            }
+          }
+
           @{
-            Present   = [bool]$f
-            SizeKB    = if ($f) { [math]::Round($f.Length / 1KB, 1) } else { 0 }
-            UnderCap  = if ($f) { $f.Length -lt 262144 } else { $false }
-            IsJpeg    = if ($f) {
-                          # Firma JPEG: FF D8 FF. Detecta un PNG renombrado.
-                          $b = Get-Content $img -AsByteStream -TotalCount 3 -ErrorAction SilentlyContinue
-                          ($b[0] -eq 0xFF -and $b[1] -eq 0xD8 -and $b[2] -eq 0xFF)
-                        } else { $false }
+            Present  = [bool]$f
+            SizeKB   = if ($f) { [math]::Round($f.Length / 1KB, 1) } else { 0 }
+            UnderCap = if ($f) { $f.Length -lt 262144 } else { $false }
+            IsJpeg   = $isJpeg
+            Signature = if ($sig) { $sig } else { '(no leida)' }
           }
       register: img_check
       changed_when: false
@@ -42,17 +59,20 @@
     - name: "[2/3] Abortar si la imagen no es valida"
       ansible.builtin.assert:
         that:
-          - img_check.output[0].Present
-          - img_check.output[0].UnderCap
-          - img_check.output[0].IsJpeg
+          - img_check.output[0].Present | bool
+          - img_check.output[0].UnderCap | bool
+          - img_check.output[0].IsJpeg | bool
         fail_msg: >-
           Imagen invalida en {{ inventory_hostname }}:
           presente={{ img_check.output[0].Present }},
           {{ img_check.output[0].SizeKB }} KB,
           bajo_limite={{ img_check.output[0].UnderCap }},
-          jpeg_real={{ img_check.output[0].IsJpeg }}.
+          jpeg_real={{ img_check.output[0].IsJpeg }},
+          firma='{{ img_check.output[0].Signature }}' (esperada 'FF D8 FF').
           Windows la ignoraria en silencio.
-        success_msg: "Imagen valida ({{ img_check.output[0].SizeKB }} KB)."
+        success_msg: >-
+          Imagen valida ({{ img_check.output[0].SizeKB }} KB,
+          firma {{ img_check.output[0].Signature }}).
 
     - name: "[3/3] Habilitar OEMBackground en LogonUI"
       ansible.windows.win_regedit:
@@ -68,6 +88,7 @@
         msg: >-
           {{ inventory_hostname }} |
           imagen={{ img_check.output[0].SizeKB }} KB |
+          firma={{ img_check.output[0].Signature }} |
           OEMBackground={{ oem_state }} |
           cambio={{ oem_result.changed }} |
           efectivo en el proximo inicio de sesion
