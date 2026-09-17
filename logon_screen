@@ -1,0 +1,130 @@
+---
+# ============================================================================
+# Drakos Cave SOC - Homologacion del aviso legal de inicio de sesion
+# Fecha: 2026-09-17
+# Version: v1
+# Hosts: grupo [windows]
+#
+# Configura el banner de logon (legal notice) de Windows via registro:
+#   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+#     - legalnoticecaption (REG_SZ) -> titulo del cuadro
+#     - legalnoticetext    (REG_SZ) -> cuerpo del mensaje
+#
+# El cuadro se muestra ANTES del prompt de credenciales, en todos los hosts.
+# No requiere reinicio: aplica en el siguiente inicio de sesion.
+#
+# Uso:
+#   ansible-playbook -i inventory set_logon_banner_horus.yml
+#   ansible-playbook -i inventory set_logon_banner_horus.yml --check --diff
+#   ansible-playbook -i inventory set_logon_banner_horus.yml -e "banner_state=absent"
+# ============================================================================
+- name: Drakos SOC - Homologar aviso legal de inicio de sesion (Horus)
+  hosts: windows
+  gather_facts: yes
+  serial: 5
+
+  vars:
+    # 'present' aplica el banner; 'absent' lo elimina de todos los hosts
+    banner_state: present
+
+    banner_regpath: 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+
+    banner_caption: 'Drakos Cave ☠ XVI Legión — Hijos de Horus'
+
+    banner_text: |
+      ⚔️ ¡TRANSMISIÓN PRIORITARIA — VOX SEGURO DEL VENGEFUL SPIRIT! 🐍
+      Antes de cruzar la esclusa del Acceso Remoto, escucha al Maestro de Guerra:
+
+      "La lealtad ciega es la debilidad del Imperio.
+       La vigilancia deliberada es la fuerza de la Herejía."
+      — Horus Lupercal (Maestro de Guerra, ex-Primarca Leal)
+
+      🔥 Recuerda, hermano de la XVI Legión:
+
+      🛡️ Tu contraseña es tu armadura de energía: forjada a tu medida, jamás
+      prestada a otro guerrero, jamás grabada en pergamino.
+
+      📜 No abras transmisiones de la Flota Imperial prometiendo gloria eterna...
+      todo vox que exige acción inmediata es un susurro del Disforme. ¡Es trampa!
+
+      🔐 La autenticación de dos factores (2FA) es tu escudo de vacío. Quien la
+      desactiva combate desnudo ante los cañones enemigos.
+
+      🌀 Los "accesos rápidos" son puertas a la Disformidad sin Campo Geller.
+      Lo que entra por ahí no siempre es lo que dice ser.
+
+      👁️ Si algo huele a corrupción, no lo silencies ni lo investigues solo.
+      Reporta al Círculo Mournival (Soporte TI) de inmediato.
+
+      ⚠️ Acceso autorizado únicamente a personal de la Legión con marca vigente.
+      Toda actividad queda inscrita en los archivos del Vengeful Spirit... y en
+      el Active Directory. El Ojo de Terra observa siempre.
+
+      ☠️ El uso indebido será juzgado por el Maestro de Guerra. No habrá segundo
+      juicio.
+
+      🐍 Que la Disformidad guíe tu mano y tu antivirus tu camino.
+      — Drakos Cave // Dirección de Ciberseguridad 🖤⚙️
+
+  tasks:
+    - name: "[1/5] Verificar que existe la ruta de politicas"
+      ansible.windows.win_regedit:
+        path: "{{ banner_regpath }}"
+        state: present
+      when: banner_state == 'present'
+
+    - name: "[2/5] Configurar titulo del aviso (legalnoticecaption)"
+      ansible.windows.win_regedit:
+        path: "{{ banner_regpath }}"
+        name: legalnoticecaption
+        data: "{{ banner_caption }}"
+        type: string
+        state: "{{ banner_state }}"
+      register: caption_result
+
+    - name: "[3/5] Configurar cuerpo del aviso (legalnoticetext)"
+      ansible.windows.win_regedit:
+        path: "{{ banner_regpath }}"
+        name: legalnoticetext
+        # El trim final evita una linea en blanco extra al pie del cuadro
+        data: "{{ banner_text | trim }}"
+        type: string
+        state: "{{ banner_state }}"
+      register: text_result
+
+    - name: "[4/5] Leer valores aplicados para verificacion"
+      ansible.windows.win_powershell:
+        script: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+          $caption = (Get-ItemProperty -Path $key -Name legalnoticecaption -ErrorAction SilentlyContinue).legalnoticecaption
+          $text    = (Get-ItemProperty -Path $key -Name legalnoticetext    -ErrorAction SilentlyContinue).legalnoticetext
+
+          @{
+            Host        = $env:COMPUTERNAME
+            Caption     = if ($caption) { $caption } else { '(no configurado)' }
+            TextLength  = if ($text) { $text.Length } else { 0 }
+            TextLines   = if ($text) { ($text -split "`n").Count } else { 0 }
+            FirstLine   = if ($text) { ($text -split "`r?`n")[0] } else { '(vacio)' }
+            Applied     = [bool]($caption -and $text)
+          }
+      register: banner_check
+      changed_when: false
+
+    - name: "[5/5] Reporte por host"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} |
+          caption='{{ banner_check.output[0].Caption }}' |
+          {{ banner_check.output[0].TextLength }} caracteres,
+          {{ banner_check.output[0].TextLines }} lineas |
+          aplicado={{ banner_check.output[0].Applied }}
+
+  post_tasks:
+    - name: "Resumen de homologacion"
+      ansible.builtin.debug:
+        msg:
+          - "Banner {{ 'aplicado' if banner_state == 'present' else 'eliminado' }} en {{ inventory_hostname }}"
+          - "Cambio en caption: {{ caption_result.changed }}"
+          - "Cambio en text: {{ text_result.changed }}"
+          - "Efectivo en el proximo inicio de sesion (no requiere reinicio)."
+      run_once: false
