@@ -1,0 +1,49 @@
+---
+# Preflight de SOLO LECTURA para conectar hosts a Komodo (Periphery).
+# No instala ni modifica nada en los hosts. Pensado para ejecutarse desde Semaphore.
+# Comprueba: sistema, requisitos de Periphery, estado de Docker/Wazuh y, sobre todo,
+# si la cuenta de servicio puede escalar a root tal como lo hace Ansible (become).
+- name: Preflight Komodo (solo lectura)
+  hosts: "{{ target | default('linux') }}"
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Datos del sistema y requisitos (sin escalar privilegios)
+      ansible.builtin.shell: |
+        printf 'host=%s\n' "$(uname -n)"
+        . /etc/os-release; printf 'so=%s\n' "$PRETTY_NAME"
+        printf 'kernel=%s\n' "$(uname -r)"
+        printf 'python3=%s\n' "$(python3 --version 2>&1)"
+        printf 'openssl=%s\n' "$(openssl version 2>&1 | cut -d' ' -f1-2)"
+        printf 'curl=%s\n' "$(command -v curl >/dev/null && echo si || echo no)"
+        printf 'docker_instalado=%s\n' "$(command -v docker >/dev/null && echo si || echo no)"
+        printf 'docker_activo=%s\n' "$(systemctl is-active docker 2>/dev/null || echo no)"
+        printf 'wazuh_agente=%s\n' "$(systemctl is-active wazuh-agent 2>/dev/null || echo ausente)"
+        printf 'periphery=%s\n' "$(systemctl is-active periphery 2>/dev/null || echo ausente)"
+        printf 'puertos_8120_9001_en_uso=%s\n' "$(ss -lnt 2>/dev/null | grep -cE ':(8120|9001)\b')"
+        printf 'raiz_libre=%s\n' "$(df -h / | awk 'NR==2{print $4" ("$5" usado)"}')"
+        printf 'ram_disponible_mb=%s\n' "$(free -m | awk '/^Mem:/{print $7}')"
+      args:
+        executable: /bin/bash
+      register: base
+      changed_when: false
+
+    - name: Lista de comandos que sudo permite a esta cuenta (solo lista, no ejecuta nada)
+      ansible.builtin.command: sudo -n -l
+      register: sudol
+      changed_when: false
+      failed_when: false
+
+    - name: Prueba de escalada como la hace Ansible (become) con un comando inocuo
+      ansible.builtin.command: id -u
+      become: true
+      register: becomeprobe
+      changed_when: false
+      failed_when: false
+
+    - name: Resultado por host
+      ansible.builtin.debug:
+        msg:
+          - "{{ base.stdout_lines }}"
+          - "BECOME: {{ 'OK (uid ' ~ becomeprobe.stdout ~ ')' if (becomeprobe.rc | default(1)) == 0 else 'FALLA -> ' ~ ((becomeprobe.stderr | default('sin detalle')) | truncate(220)) }}"
+          - "SUDO -l: {{ sudol.stdout_lines | default([]) | select('search', 'NOPASSWD|!') | list }}"
